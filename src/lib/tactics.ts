@@ -546,7 +546,7 @@ export function teamBrief(mine: Spirit[], theirs: Spirit[], precomputed?: TeamMe
         if (chosen.outPct >= 50 && chosen.incPct <= lowestIncoming + 0.05) reason = '，是我方里最扛得住的选择';
         else if (chosen.outPct >= 50 && chosen.outPct >= highestOut - 0.05) reason = '，是我方打得最痛的一只';
         else if (chosen.outPct < 50 && chosen.outPct >= highestOut - 0.05) reason = '，但这是全队最高的一项输出，只能磨血';
-        else if (chosen.outPct < 50) reason = '，双方都打不疼对方，属于磨血对位';
+        else if (chosen.outPct < 50) reason = chosen.incPct < 50 ? '，双方都打不疼对方，属于磨血对位' : '，我方这边只能磨血等换人';
         incomingSentence = `同时它挨对方「${incSkill}」只掉 ${inc}${reason}`;
       }
     } else {
@@ -732,7 +732,7 @@ export function teamBrief(mine: Spirit[], theirs: Spirit[], precomputed?: TeamMe
   const gaps = answers.filter((a) => a.percent < 100);
   if (gaps.length) {
     guardLines.push(
-      `打不满血的：${gaps
+      `打不到 100% 的：${gaps
         .slice(0, 4)
         .map((g) => `${g.enemyName}（我方最高只估算 ${pctText(g.percent)}）`)
         .join('、')}，这些目标要靠磨血或变化技能处理。`,
