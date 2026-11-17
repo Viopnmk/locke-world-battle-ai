@@ -14,6 +14,7 @@ import {
   type AiResult,
 } from '../services/ai-client';
 import { AiAnswer } from './AiAnswer';
+import { AnalystView, ThreatBoard } from './AnalystView';
 import { LocalBriefView } from './LocalBriefView';
 import { SpiritPicker } from './SpiritPicker';
 import { TeamAnalysis } from './TeamAnalysis';
@@ -181,15 +182,32 @@ export function AiPanel() {
       </section>
 
       {analysis ? (
-        <section className="panel panel--engine-result" ref={briefRef} id="local-battle-brief">
-          <div className="engine-result__head">
-            <h2 className="panel__title">本地实战分析</h2>
-            <span className="engine-result__stamp">
-              {analysis.ms}ms · {analysis.brief.sections.reduce((n, s) => n + s.lines.length, 0)} 条结论
-            </span>
-          </div>
-          <LocalBriefView brief={analysis.brief} />
-        </section>
+        <>
+          <section className="panel panel--engine-result" ref={briefRef} id="local-battle-brief">
+            <div className="engine-result__head">
+              <h2 className="panel__title">本地实战分析</h2>
+              <span className="engine-result__stamp">
+                {analysis.ms}ms ·{' '}
+                {analysis.brief.threats.length +
+                  analysis.brief.analyst.blocks.reduce((n, b) => n + b.lines.length, 0) +
+                  analysis.brief.sections.reduce((n, s) => n + s.lines.length, 0)}{' '}
+                条结论
+              </span>
+            </div>
+            <p className="local-brief__headline">{analysis.brief.headline}</p>
+          </section>
+
+          <ThreatBoard threats={analysis.brief.threats} note={analysis.brief.footnote} />
+
+          <AnalystView note={analysis.brief.analyst} />
+
+          <section className="panel panel--engine-result">
+            <LocalBriefView
+              brief={{ ...analysis.brief, footnote: analysis.brief.estimateNote }}
+              showHeadline={false}
+            />
+          </section>
+        </>
       ) : null}
 
       {analysis ? <TeamAnalysis mine={mine} enemy={enemy} metrics={analysis.metrics} /> : null}

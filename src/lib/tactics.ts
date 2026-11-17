@@ -7,6 +7,8 @@
  */
 import { spiritMetrics, STAT_KEYS, teamMetrics } from './analysis';
 import type { SpiritMetrics, TeamMetrics } from './analysis';
+import { estimateHit, DAMAGE_DISCLAIMER, DAMAGE_NOTE } from './damage';
+import type { DamageHit } from './damage';
 import { skillsOf } from './spirits';
 import { formatMultiplier, matchup, TYPE_ORDER } from './typeChart';
 import type { ResolvedSkill, Spirit } from './types';
@@ -277,150 +279,438 @@ export function spiritBrief(spirit: Spirit, precomputed?: SpiritMetrics): LocalB
     footnote: `基于图鉴 ${total.population} 只形态的种族值百分位、属性倍率表、特性原文与 ${m.skills.total} 个可学技能本地计算，未调用任何模型。`,
   };
 }
-
 /* ============================================================ 双方阵容实战 */
 
-export interface TeamBrief extends LocalBrief {
-  /** 敌方每只的应对方案，界面可以额外可视化 */
-  answers: {
-    enemyId: string;
-    enemyName: string;
-    enemyTypes: string[];
-    best: { name: string; id: string; multiplier: number; threat: number; speedEdge: number; skill: ResolvedSkill | null; skillType: string };
-    alternative: { name: string; multiplier: number; threat: number } | null;
-    hasAnswer: boolean;
-  }[];
+export interface ThreatLine {
+  enemyId: string;
+  enemyName: string;
+  enemyTypes: string[];
+  /** 最高一击（打我方最疼的一发） */
+  top: {
+    allyName: string;
+    percent: number;
+    skillName: string | null;
+    skillType: string;
+    multiplier: number;
+  } | null;
+  /** 威胁分：对我方每只取 min(伤害, 100) 求和，秒杀不重复计分 */
+  score: number;
+  /** 能 1–2 击带走（≥50%）的我方成员 */
+  kos: { allyName: string; percent: number; skillName: string | null }[];
+  oneShots: number;
+  line: string;
 }
+
+export interface AnalystFactor {
+  key: 'type' | 'damage' | 'speed' | 'bulk';
+  label: string;
+  /** 0–100，50 = 持平 */
+  percent: number;
+  side: 'mine' | 'enemy' | 'even';
+  detail: string;
+}
+
+export interface AnalystBlock {
+  key: string;
+  title: string;
+  lines: string[];
+}
+
+export interface AnalystAnswer {
+  enemyId: string;
+  enemyName: string;
+  enemyTypes: string[];
+  allyName: string;
+  allyId: string;
+  percent: number;
+  skillName: string | null;
+  skillType: string;
+  incomingPercent: number;
+  incomingSkillName: string | null;
+  incomingSkillType: string | null;
+  koCount: number;
+  line: string;
+}
+
+export interface AnalystNote {
+  /** 四项加权的胜率倾向，0–100 */
+  percent: number;
+  lean: string;
+  factors: AnalystFactor[];
+  summary: string[];
+  blocks: AnalystBlock[];
+}
+
+export interface TeamBrief extends LocalBrief {
+  threats: ThreatLine[];
+  answers: AnalystAnswer[];
+  analyst: AnalystNote;
+  /** 伤害估算的口径说明，界面小字展示 */
+  estimateNote: string;
+}
+
+const pctText = (n: number) => `${Math.round(n)}%`;
+
+/** 把「我方值 / 敌方值」换成 0–100 的倾向分：比值越大越偏向我方，50 = 持平 */
+function tiltFactor(mine: number, enemy: number): number {
+  const m = Number.isFinite(mine) && mine > 0 ? mine : 0;
+  const e = Number.isFinite(enemy) && enemy > 0 ? enemy : 0;
+  if (m <= 0 && e <= 0) return 50;
+  if (m <= 0) return 0;
+  if (e <= 0) return 100;
+  const tilt = 0.5 + 0.5 * Math.tanh(Math.log(m / e));
+  return Math.round(tilt * 1000) / 10;
+}
+
+const FACTOR_WEIGHT: Record<AnalystFactor['key'], number> = {
+  type: 0.35,
+  damage: 0.3,
+  speed: 0.2,
+  bulk: 0.15,
+};
+
+const FACTOR_ADVICE: Record<AnalystFactor['key'], string> = {
+  type: '别把核心往对方克制的属性上送，换人按倍率走',
+  damage: '先手把输出打出去，别拖成互相磨血',
+  speed: '避开正面消耗，靠先手或换宠抢节奏',
+  bulk: '别硬顶伤害，靠换人分摊',
+};
+
+const bulkOf = (s: Spirit) => (s.stats.hp ?? 0) + (s.stats.def ?? 0) + (s.stats.spd ?? 0);
 
 export function teamBrief(mine: Spirit[], theirs: Spirit[], precomputed?: TeamMetrics): TeamBrief {
   const metrics = precomputed ?? teamMetrics(mine, theirs);
-  const mineById = new Map(mine.map((s) => [s.id, s]));
-  const theirsById = new Map(theirs.map((s) => [s.id, s]));
   const myLabel = displayLabels(mine);
   const enemyLabel = displayLabels(theirs);
+  /* 双方出现同一个名字（镜像阵容/同名形态）时补上阵营，避免「派 烈火战神 打 烈火战神」看不出谁是谁 */
+  const enemyNames = new Set(enemyLabel.values());
+  const sharedNames = new Set([...myLabel.values()].filter((n) => enemyNames.has(n)));
+  if (sharedNames.size) {
+    for (const [id, name] of myLabel) if (sharedNames.has(name)) myLabel.set(id, `${name}（我方）`);
+    for (const [id, name] of enemyLabel) if (sharedNames.has(name)) enemyLabel.set(id, `${name}（敌方）`);
+  }
   const labelOfMine = (spirit: Spirit) => myLabel.get(spirit.id) ?? shortName(spirit.name);
   const labelOfEnemy = (spirit: Spirit) => enemyLabel.get(spirit.id) ?? shortName(spirit.name);
 
-  /* -------------------------------------------------- 逐只敌方：最佳答案 */
-  const answers: TeamBrief['answers'] = theirs.map((en, j) => {
-    const cells = mine.map((m, i) => {
+  /* -------------------------------------------------- 逐格：我方一击 / 敌方一击 */
+  const pairs: {
+    my: Spirit;
+    enemy: Spirit;
+    myHit: DamageHit | null;
+    enHit: DamageHit | null;
+    myMult: number;
+    enMult: number;
+    speedEdge: number;
+  }[] = [];
+  for (let i = 0; i < mine.length; i += 1) {
+    for (let j = 0; j < theirs.length; j += 1) {
       const cell = metrics.matrix[i][j];
-      return {
-        name: labelOfMine(m),
-        id: m.id,
-        multiplier: cell.attack.multiplier,
-        threat: cell.threat.multiplier,
+      pairs.push({
+        my: mine[i],
+        enemy: theirs[j],
+        myHit: estimateHit(mine[i], theirs[j]),
+        enHit: estimateHit(theirs[j], mine[i]),
+        myMult: cell.attack.multiplier,
+        enMult: cell.threat.multiplier,
         speedEdge: cell.speedEdge,
-        skill: cell.attack.skill,
-        skillType: cell.attack.skillType,
+      });
+    }
+  }
+
+  /* -------------------------------------------------- 敌方威胁小结 */
+  const threats: ThreatLine[] = theirs.map((en) => {
+    const rows = mine.map((m) => {
+      const hit = estimateHit(en, m);
+      return {
+        spirit: m,
+        allyName: labelOfMine(m),
+        percent: hit?.percent ?? 0,
+        skillName: hit?.skill.name ?? null,
+        skillType: hit?.skill.type ?? en.type[0],
+        multiplier: hit?.multiplier ?? 1,
       };
     });
-    const sorted = [...cells].sort(
-      (a, b) => b.multiplier - a.multiplier || a.threat - b.threat || b.speedEdge - a.speedEdge,
-    );
-    const best = sorted[0];
-    const altRaw = sorted[1];
+    const sorted = [...rows].sort((a, b) => b.percent - a.percent);
+    const topRow = sorted[0];
+    const kos = sorted.filter((r) => r.percent >= 50);
+    const oneShots = sorted.filter((r) => r.percent >= 100).length;
+    const score = Math.round(rows.reduce((sum, r) => sum + Math.min(r.percent, 100), 0) * 10) / 10;
+    const hasSkill = Boolean(topRow && topRow.skillName);
+
+    const line = hasSkill
+      ? `${labelOfEnemy(en)}：最高一击打我方 ${topRow.allyName} ${pctText(topRow.percent)}（代表招「${topRow.skillName}」）；能 1–2 击带走我方 ${kos.length} 只${
+          kos.length ? `（其中 1 击秒杀 ${oneShots} 只）` : ''
+        }。`
+      : `${labelOfEnemy(en)}：学习面里没有伤害技能，只能靠变化技能，伤害按 0 计。`;
+
     return {
       enemyId: en.id,
       enemyName: labelOfEnemy(en),
       enemyTypes: en.type,
-      best,
-      alternative:
-        altRaw && altRaw.id !== best?.id
-          ? { name: altRaw.name, multiplier: altRaw.multiplier, threat: altRaw.threat }
-          : null,
-      hasAnswer: Boolean(best && best.multiplier >= 2),
+      top: topRow && hasSkill
+        ? {
+            allyName: topRow.allyName,
+            percent: topRow.percent,
+            skillName: topRow.skillName,
+            skillType: topRow.skillType,
+            multiplier: topRow.multiplier,
+          }
+        : null,
+      score,
+      kos,
+      oneShots,
+      line,
+    };
+  });
+  /* 先按「能带走我方几只」排，再按秒杀数、最高一击、总威胁分；读者一眼能对上括号里的数字 */
+  threats.sort(
+    (a, b) =>
+      b.kos.length - a.kos.length ||
+      b.oneShots - a.oneShots ||
+      (b.top?.percent ?? 0) - (a.top?.percent ?? 0) ||
+      b.score - a.score,
+  );
+
+  /* -------------------------------------------------- 我方王牌（对全队总威胁最高） */
+  const allyRows = mine.map((m, i) => {
+    const outs = theirs.map((en, j) => ({
+      enemy: en,
+      enemyName: labelOfEnemy(en),
+      percent: pairs[i * theirs.length + j]?.myHit?.percent ?? 0,
+      skillName: pairs[i * theirs.length + j]?.myHit?.skill.name ?? null,
+    }));
+    const ins = theirs.map((en) => Math.min(estimateHit(en, m)?.percent ?? 0, 100));
+    const total = Math.round(outs.reduce((sum, o) => sum + Math.min(o.percent, 100), 0) * 10) / 10;
+    const raw = Math.round(outs.reduce((sum, o) => sum + o.percent, 0) * 10) / 10;
+    const income = Math.round(ins.reduce((sum, v) => sum + v, 0) * 10) / 10;
+    return { spirit: m, label: labelOfMine(m), outs, total, raw, income };
+  });
+  const aceRow = [...allyRows].sort((a, b) => b.total - a.total || b.raw - a.raw)[0] ?? null;
+
+  /* -------------------------------------------------- 逐只敌方的应对者 */
+  const answers: AnalystAnswer[] = threats.map((threat) => {
+    const en = theirs.find((e) => e.id === threat.enemyId)!;
+    const candidates = mine.map((m) => {
+      const out = estimateHit(m, en);
+      const inc = estimateHit(en, m);
+      const outPct = out?.percent ?? 0;
+      const incPct = inc?.percent ?? 0;
+      const speedEdge = (m.stats.spe ?? 0) - (en.stats.spe ?? 0);
+      /* 先看能打多疼，再惩罚挨打，速度先手算一点优势 */
+      const score = Math.min(outPct, 100) * (speedEdge > 0 ? 1.15 : 1) - Math.min(incPct, 100) * 0.6;
+      return { m, out, inc, outPct, incPct, speedEdge, score };
+    });
+    candidates.sort((a, b) => b.score - a.score || b.outPct - a.outPct);
+    const chosen = candidates[0];
+    const enemyKo = threat.kos.length;
+
+    if (!chosen) {
+      return {
+        enemyId: en.id,
+        enemyName: threat.enemyName,
+        enemyTypes: en.type,
+        allyName: '—',
+        allyId: '',
+        percent: 0,
+        skillName: null,
+        skillType: en.type[0],
+        incomingPercent: 0,
+        incomingSkillName: null,
+        incomingSkillType: null,
+        koCount: enemyKo,
+        line: `对 ${threat.enemyName}：我方没有可出场的精灵。`,
+      };
+    }
+
+    const lowestIncoming = Math.min(...candidates.map((c) => c.incPct));
+    const highestOut = Math.max(...candidates.map((c) => c.outPct));
+    let skillSentence: string;
+    if (chosen.out?.skill) {
+      const verb =
+        chosen.outPct >= 100 ? '直接 1 击带走' : chosen.outPct >= 50 ? '2 击内解决' : '要磨到 3 击以上';
+      skillSentence = `它用「${chosen.out.skill.name}」反手能打 ${pctText(chosen.outPct)}，${verb}`;
+    } else {
+      skillSentence = '它没有能打伤对方的技能，只能顶变化技能';
+    }
+
+    let incomingSentence: string;
+    if (chosen.inc) {
+      const incSkill = chosen.inc.skill.name;
+      const inc = pctText(chosen.incPct);
+      if (chosen.incPct >= 100) {
+        incomingSentence = `但它挨对方「${incSkill}」约掉 ${inc}，自己也会被一招带走，只能抢速度先手`;
+      } else if (chosen.incPct >= 50) {
+        incomingSentence = `同时它挨对方「${incSkill}」约掉 ${inc}，撑两下就到线`;
+      } else {
+        let reason = '';
+        if (chosen.outPct >= 50 && chosen.incPct <= lowestIncoming + 0.05) reason = '，是我方里最扛得住的选择';
+        else if (chosen.outPct >= 50 && chosen.outPct >= highestOut - 0.05) reason = '，是我方打得最痛的一只';
+        else if (chosen.outPct < 50 && chosen.outPct >= highestOut - 0.05) reason = '，但这是全队最高的一项输出，只能磨血';
+        else if (chosen.outPct < 50) reason = '，双方都打不疼对方，属于磨血对位';
+        incomingSentence = `同时它挨对方「${incSkill}」只掉 ${inc}${reason}`;
+      }
+    } else {
+      incomingSentence = '对方没有伤害技能，打不痛它，可以放心对位';
+    }
+
+    const head = enemyKo
+      ? `对 ${threat.enemyName}：它能 1–2 击带走我方 ${enemyKo} 只，派 ${labelOfMine(chosen.m)}对位`
+      : `对 ${threat.enemyName}：它目前打不动我方任何一只，派 ${labelOfMine(chosen.m)}对位`;
+
+    return {
+      enemyId: en.id,
+      enemyName: threat.enemyName,
+      enemyTypes: en.type,
+      allyName: labelOfMine(chosen.m),
+      allyId: chosen.m.id,
+      percent: chosen.outPct,
+      skillName: chosen.out?.skill.name ?? null,
+      skillType: chosen.out?.skill.type ?? en.type[0],
+      incomingPercent: chosen.incPct,
+      incomingSkillName: chosen.inc?.skill.name ?? null,
+      incomingSkillType: chosen.inc?.skill.type ?? null,
+      koCount: enemyKo,
+      line: `${head}——${skillSentence}；${incomingSentence}。`,
     };
   });
 
-  /* -------------------------------------------------- 首发 */
-  const leadRanked = metrics.ranked;
-  const leadRow = leadRanked[0] ?? null;
-  const lead = leadRow ? mineById.get(leadRow.id) ?? null : null;
-  const altLeadRow = leadRanked[1] ?? null;
-  const altLead = altLeadRow ? mineById.get(altLeadRow.id) ?? null : null;
+  /* -------------------------------------------------- 四项加权胜率倾向 */
+  const avg = (arr: number[]) => mean(arr);
+  const myType = avg(pairs.map((p) => p.myMult));
+  const enemyType = avg(pairs.map((p) => p.enMult));
+  const myDamage = avg(pairs.map((p) => Math.min(p.myHit?.percent ?? 0, 150)));
+  const enemyDamage = avg(pairs.map((p) => Math.min(p.enHit?.percent ?? 0, 150)));
+  const wins = pairs.filter((p) => p.speedEdge > 0).length;
+  const losses = pairs.filter((p) => p.speedEdge < 0).length;
+  const mySpeed = 1 + (pairs.length ? wins / pairs.length : 0);
+  const enemySpeed = 1 + (pairs.length ? losses / pairs.length : 0);
+  const myBulk = avg(mine.map(bulkOf));
+  const enemyBulk = avg(theirs.map(bulkOf));
 
-  const leadLines: string[] = [];
-  if (lead && leadRow) {
-    leadLines.push(
-      `首选 ${labelOfMine(lead)}：对敌平均进攻 ${fmt(leadRow.attack)}、平均受威胁 ${fmt(leadRow.threat)}、速度平均差 ${sign(leadRow.speedEdge)}，对位综合分 ${leadRow.score}（我方最高）。`,
+  const factors: AnalystFactor[] = [
+    {
+      key: 'type',
+      label: '属性压制',
+      percent: tiltFactor(myType, enemyType),
+      side: 'even',
+      detail: `我方平均打出 ×${myType.toFixed(2)}，对方平均 ×${enemyType.toFixed(2)}`,
+    },
+    {
+      key: 'damage',
+      label: '伤害效率',
+      percent: tiltFactor(myDamage, enemyDamage),
+      side: 'even',
+      detail: `我方平均单发 ${pctText(myDamage)}，对方 ${pctText(enemyDamage)}（单只按 150% 封顶）`,
+    },
+    {
+      key: 'speed',
+      label: '速度控制',
+      percent: tiltFactor(mySpeed, enemySpeed),
+      side: 'even',
+      detail: `对位里我方先手 ${wins} 组、对方先手 ${losses} 组（共 ${pairs.length} 组）`,
+    },
+    {
+      key: 'bulk',
+      label: '耐久总值',
+      percent: tiltFactor(myBulk, enemyBulk),
+      side: 'even',
+      detail: `我方平均 生命+双防 ${Math.round(myBulk)}，对方 ${Math.round(enemyBulk)}`,
+    },
+  ].map((f) => ({ ...f, side: f.percent >= 52 ? 'mine' : f.percent <= 48 ? 'enemy' : 'even' }) as AnalystFactor);
+
+  const weighted = factors.reduce((sum, f) => sum + f.percent * FACTOR_WEIGHT[f.key], 0);
+  const ourPercent = Math.round(Math.min(100, Math.max(0, weighted)));
+  const lean = ourPercent >= 54 ? '我方略占优' : ourPercent <= 46 ? '敌方略占优' : '双方在伯仲之间';
+  const deciding = [...factors].sort((a, b) => b.percent - a.percent)[0];
+  const weakest = [...factors].sort((a, b) => a.percent - b.percent)[0];
+
+  const leadScore = (row: { total: number; income: number }) => row.total - 0.5 * row.income;
+  const leadRow = [...allyRows].sort((a, b) => leadScore(b) - leadScore(a) || b.raw - a.raw)[0] ?? null;
+
+  const summary: string[] = [
+    `按四项加权（属性压制 35% / 伤害效率 30% / 速度控制 20% / 耐久总值 15%），我方倾向 ${ourPercent}%，${lean}。`,
+    `四项得分：${factors.map((f) => `${f.label} ${f.percent}`).join('、')}（50 = 持平）。`,
+    `关键胜负手是${deciding.label}（${deciding.percent}，${
+      deciding.side === 'mine' ? '我方领先' : deciding.side === 'enemy' ? '对方领先' : '基本持平'
+    }）；短板在${weakest.label}，${FACTOR_ADVICE[weakest.key]}。`,
+  ];
+
+  /* -------------------------------------------------- 分析师点评的四段 */
+  const blocks: AnalystBlock[] = [];
+
+  if (aceRow) {
+    const aceKos = aceRow.outs.filter((o) => o.percent >= 50).sort((a, b) => b.percent - a.percent);
+    const aceOneShots = aceKos.filter((o) => o.percent >= 100).length;
+    const aceLines = [
+      `「${aceRow.label}」是我方火力核心：对敌方全队的总威胁最高（${aceRow.total} 点，每只按最多 100% 计）。`,
+      aceKos.length
+        ? `它能 1–2 击带走 ${aceKos.map((o) => o.enemyName).join('、')} 共 ${aceKos.length} 只${
+            aceOneShots ? `（其中 1 击秒杀 ${aceOneShots} 只）` : ''
+          }。`
+        : '不过敌方目前没有它能 1–2 击带走的目标，更适合中盘换入当保险。',
+      aceKos.length
+        ? '围绕它打集火：先兑掉它能秒的目标，别让它上来就被对面换掉。'
+        : '别让它先手硬拼，等对方血量被磨下来再上。',
+    ];
+    blocks.push({ key: 'ace', title: '🌟 我方王牌', lines: aceLines });
+  }
+
+  const topThreat = threats[0] ?? null;
+  if (topThreat) {
+    const names = topThreat.kos.map((k) => k.allyName).join('、');
+    const threatLines = [
+      topThreat.top
+        ? `敌方最危险的是「${topThreat.enemyName}」：最高一击打我方 ${topThreat.top.allyName} ${pctText(
+            topThreat.top.percent,
+          )}（代表招「${topThreat.top.skillName}」）。`
+        : `敌方最危险的是「${topThreat.enemyName}」，但它的学习面里没有伤害技能，威胁主要来自变化技能。`,
+      topThreat.kos.length
+        ? `它能 1–2 击威胁我方 ${names} 共 ${topThreat.kos.length} 只${
+            topThreat.oneShots ? `（其中 1 击秒杀 ${topThreat.oneShots} 只）` : ''
+          }。`
+        : '它目前没有能 1–2 击带走的目标，属于靠变化技能磨血的类型。',
+      '它上场时优先用下面的应对者对位，别让它舒服地连续出手。',
+    ];
+    blocks.push({ key: 'threat', title: '⚠️ 最大威胁', lines: threatLines });
+  }
+
+  blocks.push({
+    key: 'answers',
+    title: '🎯 应对建议',
+    lines: answers.length ? answers.map((a) => a.line) : ['我方没有可出场的精灵。'],
+  });
+
+  if (leadRow) {
+    const lead = leadRow.spirit;
+    const spe = lead.stats.spe ?? 0;
+    const speedRank = 1 + mine.filter((m) => (m.stats.spe ?? 0) > spe).length;
+    const leadKos = leadRow.outs.filter((o) => o.percent >= 50);
+    const enemyFastest = theirs.reduce<Spirit | null>(
+      (best, e) => (!best || (e.stats.spe ?? 0) > (best.stats.spe ?? 0) ? e : best),
+      null,
     );
-    const leadSpe = lead.stats.spe ?? 0;
-    const enemyFastest = metrics.speed.enemyFastest;
-    const fastestSpirit = enemyFastest ? theirs.reduce((x, y) => ((y.stats.spe ?? 0) > (x.stats.spe ?? 0) ? y : x)) : null;
-    const enemyLabelFastest = fastestSpirit ? labelOfEnemy(fastestSpirit) : '';
-    if (enemyFastest) {
-      const faster = theirs.filter((e) => (e.stats.spe ?? 0) < leadSpe).length;
+    const slowerThanAll = Boolean(enemyFastest && (enemyFastest.stats.spe ?? 0) > spe);
+    const leadLines = [
+      `首发推荐「${leadRow.label}」：速度 ${spe}（全队第 ${speedRank}），开局能 1–2 击威胁敌方 ${leadKos.length} 只${
+        leadKos.length ? `（${leadKos.map((o) => o.enemyName).join('、')}）` : ''
+      }。`,
+      leadKos.length
+        ? slowerThanAll
+          ? '它抢不到先手：思路是顶住第一轮再换输出，或直接按下面的应对建议派更快的队友先手压血线。'
+          : '先手压一轮血线，逼对方先交换人或交保护；对面换上克制它的，就按上面的应对建议换人。'
+        : '开局没有能带走的目标，先用变化技能或低风险输出试探，等对方先暴露速度再决定换谁。',
+    ];
+    if (enemyFastest && (enemyFastest.stats.spe ?? 0) > spe) {
       leadLines.push(
-        `速度 ${leadSpe}，快过敌方 ${faster}/${theirs.length} 只${enemyFastest ? `（对方最快 ${enemyLabelFastest} ${enemyFastest.spe}）` : ''}。`,
+        `注意：对方 ${labelOfEnemy(enemyFastest)} 速度 ${enemyFastest.stats.spe} 比它快，开局别硬拼先手。`,
       );
     }
-    // 最佳开场目标 / 最忌讳的对象
-    const targets = answers
-      .filter((a) => a.best.id === lead.id)
-      .sort((a, b) => b.best.multiplier - a.best.multiplier);
-    const goodTarget = targets.find((t) => t.best.multiplier >= 2);
-    if (goodTarget) {
-      leadLines.push(
-        `最想遇到 ${goodTarget.enemyName}［${goodTarget.enemyTypes.join('/')}］：${goodTarget.best.skill ? `${goodTarget.best.skill.name} 威力${goodTarget.best.skill.power}` : `${goodTarget.best.skillType}系输出`} 打 ${fmt(goodTarget.best.multiplier)}。`,
-      );
-    }
-    const leadIdx = mine.findIndex((m) => m.id === lead.id);
-    const worstThreat = leadIdx >= 0
-      ? theirs
-          .map((e, j) => ({ e, cell: metrics.matrix[leadIdx][j] }))
-          .sort((a, b) => b.cell.threat.multiplier - a.cell.threat.multiplier)[0]
-      : null;
-    if (worstThreat && worstThreat.cell.threat.multiplier >= 2) {
-      leadLines.push(
-        `风险：遇到 ${labelOfEnemy(worstThreat.e)} 会被 ${worstThreat.cell.threat.skill ? `「${worstThreat.cell.threat.skill.name}」` : ''}${fmt(worstThreat.cell.threat.multiplier)} 反打，别让它先手。`,
-      );
-    }
-    if (altLead && altLeadRow) {
-      leadLines.push(
-        `备选 ${labelOfMine(altLead)}（进攻 ${fmt(altLeadRow.attack)} / 受威胁 ${fmt(altLeadRow.threat)}），想先稳一手时换它上场。`,
-      );
-    }
-  } else {
-    leadLines.push('我方阵容为空。');
+    blocks.push({ key: 'lead', title: '🚀 首发建议', lines: leadLines });
   }
 
-  /* -------------------------------------------------- 逐只应对 */
-  const answerLines: string[] = [];
-  for (const a of answers) {
-    const en = theirsById.get(a.enemyId);
-    if (!en) continue;
-    const types = a.enemyTypes.join('/');
-    const best = a.best;
-    if (best && a.hasAnswer) {
-      const spd =
-        best.speedEdge > 0 ? `我方快 ${best.speedEdge}` : best.speedEdge < 0 ? `我方慢 ${-best.speedEdge}` : '同速';
-      const parts = [
-        `挡 ${a.enemyName}［${types}］：上 ${best.name}，${
-          best.skill ? `${best.skill.name}（${best.skill.type}·威力${best.skill.power}）` : `${best.skillType}系输出`
-        } 打 ${fmt(best.multiplier)}，${spd}。`,
-      ];
-      if (best.threat >= 2) {
-        parts.push(`注意：它也吃 ${a.enemyName} 的克制（${fmt(best.threat)}），别站着挨。`);
-      } else if (best.threat <= 0.5) {
-        parts.push(`对方反打只有 ${fmt(best.threat)}，可以顶着打。`);
-      } else {
-        parts.push(`对方反打 ${fmt(best.threat)}，属正常互换。`);
-      }
-      if (a.alternative && a.alternative.multiplier >= 2 && a.alternative.threat <= 1) {
-        parts.push(`备选 ${a.alternative.name}（${fmt(a.alternative.multiplier)}，受 ${fmt(a.alternative.threat)}）。`);
-      }
-      answerLines.push(parts.join(''));
-    } else if (best) {
-      answerLines.push(
-        `挡 ${a.enemyName}［${types}］：没有 ${fmt(2)} 答案，我方最高只有 ${fmt(best.multiplier)}（${best.name}）${
-          best.speedEdge > 0 ? '，可凭速度先手换血' : ''
-        }。建议避战或用变化技能消耗。`,
-      );
-    }
-  }
+  const analyst: AnalystNote = { percent: ourPercent, lean, factors, summary, blocks };
 
-  /* -------------------------------------------------- 联防与盲区 */
+  /* -------------------------------------------------- 联防与盲区（保留原有结论） */
   const guardLines: string[] = [];
   if (metrics.sharedWeak.length) {
     for (const w of metrics.sharedWeak.slice(0, 3)) {
@@ -439,28 +729,26 @@ export function teamBrief(mine: Spirit[], theirs: Spirit[], precomputed?: TeamMe
     guardLines.push('没有同一属性可以同时克制我方 2 只以上，联防结构没有明显共振点。');
   }
 
-  const gaps = answers.filter((a) => !a.hasAnswer);
+  const gaps = answers.filter((a) => a.percent < 100);
   if (gaps.length) {
     guardLines.push(
-      `盲区：${gaps
+      `打不满血的：${gaps
         .slice(0, 4)
-        .map((g) => `${g.enemyName}［${g.enemyTypes.join('/')}］我方最高 ${fmt(g.best?.multiplier ?? 0)}`)
-        .join('、')}，这些目标只能靠平伤或变化技能处理。`,
+        .map((g) => `${g.enemyName}（我方最高只估算 ${pctText(g.percent)}）`)
+        .join('、')}，这些目标要靠磨血或变化技能处理。`,
     );
-    const gapTypes = [...new Set(gaps.flatMap((g) => g.enemyTypes))];
-    if (gapTypes.length) guardLines.push(`对方阵营里我方打不痛的类型：${gapTypes.join('、')}。`);
   } else if (answers.length) {
-    guardLines.push('打击面无盲区：敌方每只我方都有人能打出 ≥2 倍。');
+    guardLines.push('打击面没有盲区：敌方每只我方都有人能估算到 100% 以上（一招带走）。');
   }
 
   if (metrics.speed.enemyFastest && metrics.speed.myFastest) {
     const mineTop = mine.reduce((x, y) => ((y.stats.spe ?? 0) > (x.stats.spe ?? 0) ? y : x));
     const enemyTop = theirs.reduce((x, y) => ((y.stats.spe ?? 0) > (x.stats.spe ?? 0) ? y : x));
-    const laneFastestMine = labelOfMine(mineTop);
-    const laneFastestEnemy = labelOfEnemy(enemyTop);
     const fasterCount = theirs.filter((e) => (e.stats.spe ?? 0) > (mineTop.stats.spe ?? 0)).length;
     guardLines.push(
-      `速度：我方最快 ${laneFastestMine} ${metrics.speed.myFastest.spe}，对方最快 ${laneFastestEnemy} ${metrics.speed.enemyFastest.spe}${fasterCount ? `；对方有 ${fasterCount} 只快过我方最快的那只` : '；我方最快的那只比对方全员都快'}。`,
+      `速度：我方最快 ${labelOfMine(mineTop)} ${metrics.speed.myFastest.spe}，对方最快 ${labelOfEnemy(enemyTop)} ${
+        metrics.speed.enemyFastest.spe
+      }${fasterCount ? `；对方有 ${fasterCount} 只快过我方最快的那只` : '；我方最快的那只比对方全员都快'}。`,
     );
   }
 
@@ -468,7 +756,7 @@ export function teamBrief(mine: Spirit[], theirs: Spirit[], precomputed?: TeamMe
     guardLines.push(
       `可以联防：${metrics.sharedResist
         .slice(0, 4)
-        .map((r) => `${r.type}系被 ${r.count} 只抵抗`)
+        .map((r) => `${r.type}系被我方 ${r.count} 只抵抗`)
         .join('、')}。`,
     );
   }
@@ -480,22 +768,20 @@ export function teamBrief(mine: Spirit[], theirs: Spirit[], precomputed?: TeamMe
 
   const headline = (() => {
     const bits = [`我方 ${mine.length} 只 vs 对方 ${theirs.length} 只`];
-    if (lead) bits.push(`首发 ${labelOfMine(lead)}`);
-    const good = answers.filter((a) => a.hasAnswer).length;
-    bits.push(`${good}/${theirs.length} 只敌方有 ≥2 倍答案`);
-    if (gaps.length) bits.push(`${gaps.length} 只存在盲区`);
+    if (leadRow) bits.push(`首发 ${leadRow.label}`);
+    const good = answers.filter((a) => a.percent >= 100).length;
+    bits.push(`${good}/${theirs.length} 只可一招带走`);
+    if (gaps.length) bits.push(`${gaps.length} 只打不到 100%`);
     return `${bits.join(' · ')}。`;
   })();
 
   return {
     headline,
-    sections: [
-      { title: '首发推荐与理由', lines: leadLines },
-      { title: '逐只敌方应对方案', lines: answerLines.length ? answerLines : ['我方没有可出场的精灵。'] },
-      { title: '联防与盲区预警', lines: guardLines },
-    ],
-    footnote: `全部由内置图鉴（${mine.length + theirs.length} 只参战精灵的种族值、属性倍率与可学技能）本地计算，0 网络请求、0 生成时间。`,
+    sections: [{ title: '联防与盲区预警', lines: guardLines }],
+    footnote: DAMAGE_NOTE,
+    threats,
     answers,
+    analyst,
+    estimateNote: DAMAGE_DISCLAIMER,
   };
 }
-

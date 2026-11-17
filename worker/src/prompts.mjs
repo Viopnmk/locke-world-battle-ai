@@ -4,6 +4,7 @@
  */
 import { STAT_KEYS, STAT_LABEL, TYPE_ORDER, matchup, multiplierText, skills, skillsOf, spiritById, spirits } from './data.mjs';
 import { bestHit, spiritMetrics, teamMetrics, duelMetrics } from './analysis.mjs';
+import { DAMAGE_FACTS_HEADER, DAMAGE_FACTS_RULE, teamThreats } from './damage.mjs';
 
 const pct = (n) => `${Math.round(n * 10) / 10}%`;
 const int = (n) => (typeof n === 'number' ? String(n) : '—');
@@ -152,6 +153,26 @@ export function buildFacts(mode, ctx) {
     .filter(Boolean)
     .join('\n');
   lines.push(summary);
+
+  // 伤害与击杀估算：模型写「谁打谁多少 %」「几下带走」时只能引用这里
+  if (mine.length && theirs.length) {
+    const threat = teamThreats(mine, theirs);
+    const block = [DAMAGE_FACTS_HEADER, DAMAGE_FACTS_RULE];
+    block.push(...threat.threats.map((t) => `- ${t.line}`));
+    if (threat.ace) {
+      block.push(
+        `- 我方王牌：${threat.ace.name}（对敌总威胁最高 ${threat.ace.total} 分），能1–2击带走 ${
+          threat.ace.kos.join('、') || '无'
+        }`,
+      );
+    }
+    if (threat.lead) {
+      const rank = 1 + mine.filter((m) => (m.stats.spe ?? 0) > (threat.lead.spe ?? 0)).length;
+      block.push(`- 首发：${threat.lead.name}（速度 ${int(threat.lead.spe)}，全队第${rank}）`);
+    }
+    lines.push(block.join('\n'));
+  }
+
   if (mine.length) lines.push(teamBlock('我方阵容', mine));
   if (mine.length && theirs.length) {
     lines.push(
@@ -259,7 +280,8 @@ export const SYSTEM_PROMPT = `你是《洛克王国：世界》的对战分析�
 7. 特性名、技能名必须原样使用事实中出现的名字，不得自创或改写。
 8. 引用特性或技能效果时按事实原文，不要改写其中的数值、对象或触发条件；不要声称某技能克制事实未列出的属性。
 9. 换人建议只能选该敌方精灵的“最佳答案”里进攻≥2倍、且受威胁≤1倍的成员；如果没有这样的成员，就直接说“没有理想答案”，不要推荐≤1倍或受威胁≥2倍的成员。
-10. 描述共同弱点时只写“X系技能可以克制我方 A、B”，不要推断 X 系本身怕什么；事实没有列出的属性关系一律不写。`;
+10. 描述共同弱点时只写“X系技能可以克制我方 A、B”，不要推断 X 系本身怕什么；事实没有列出的属性关系一律不写。
+11. 伤害百分比只能引用【伤害与击杀估算】里出现过的数字，并说明是估算；不要自己按威力或倍率另算百分比，也不要把估算写成游戏实测或官方数值。“1击秒杀 / 1–2击带走 / 3击以上”只能按那里的 100% / 50% 分档使用。`;
 
 export function outputFormat(mode) {
   if (mode === 'spirit') {

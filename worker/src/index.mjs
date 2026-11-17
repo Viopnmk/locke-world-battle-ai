@@ -11,9 +11,10 @@ import meta from '../../src/data/meta.json';
 import { findSpirit, matchup, multiplierText, TYPE_ORDER } from './data.mjs';
 import { bestHit, duelMetrics, spiritLine, spiritMetrics, teamMetrics } from './analysis.mjs';
 import { buildMessages, checkGrounding } from './prompts.mjs';
+import { teamThreats } from './damage.mjs';
 import { DEFAULT_MODEL, MODELS, chat, friendlyAiError, llmProvider, modelLabel, parseSections, resolveModel } from './ai.mjs';
 
-const VERSION = '2.0.0';
+const VERSION = '2.1.0';
 const PROD_ORIGIN = 'https://locke-world-battle-ai.pages.dev';
 const MAX_BODY_BYTES = 16 * 1024;
 
@@ -176,6 +177,7 @@ async function handleAnalyze(request, env, origin) {
       mine: mine.list.map(spiritLine),
       enemy: theirs.list.map(spiritLine),
       team: teamM,
+      threats: teamThreats(mine.list, theirs.list),
       ...(mine.list.length === 1 && theirs.list.length === 1 ? { duel: duelMetrics(mine.list[0], theirs.list[0]) } : {}),
     };
   }
