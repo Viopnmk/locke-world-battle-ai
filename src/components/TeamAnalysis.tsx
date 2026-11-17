@@ -17,11 +17,15 @@ interface Props {
   metrics: TeamMetrics;
 }
 
+/**
+ * 对位数据表：平均种族值、最快速度、逐格倍率矩阵。
+ * 收藏在 details 里，手机上默认收起，展开也不会撑破屏幕（矩阵容器自己横向滚动）。
+ */
 export function TeamAnalysis({ mine, enemy, metrics }: Props) {
   return (
     <section className="panel">
       <h2 className="panel__title">
-        确定性对位 <span className="panel__hint">图鉴数据算出，不经过模型</span>
+        对位数据 <span className="panel__hint">本地计算，可自行核对</span>
       </h2>
 
       <div className="team-summary">
@@ -46,92 +50,30 @@ export function TeamAnalysis({ mine, enemy, metrics }: Props) {
         </div>
       </div>
 
-      <div className="matrix-wrap">
-        <div
-          className="matrix"
-          style={{ gridTemplateColumns: `minmax(64px, 1.25fr) repeat(${enemy.length}, minmax(0, 1fr))` }}
-        >
-          <span className="matrix__corner">我方 \ 敌方</span>
-          {enemy.map((e) => (
-            <span key={e.id} className="matrix__col" title={e.name}>
-              {shortName(e.name)}
-              <small>{e.stats.total ?? '—'}</small>
-            </span>
-          ))}
-          {mine.map((m, i) => (
-            <Row key={m.id} mine={m} enemy={enemy} metrics={metrics} row={i} />
-          ))}
-        </div>
-      </div>
-      <p className="matrix__legend">
-        大号 = 我方用可学技能打对方的最高倍率；<span className="legend-dot is-strong" /> ≥2 倍优势，
-        <span className="legend-dot is-neutral" /> 1 倍，<span className="legend-dot is-weak" /> 被抵抗。小字 = 对方反打我方。
-      </p>
-
-      <h3 className="subhead">我方共同弱点</h3>
-      {metrics.sharedWeak.length ? (
-        <div className="chip-line">
-          {metrics.sharedWeak.map((w) => (
-            <span key={w.type} className="type-chip type-chip--sm" style={{ background: '#fdecec', color: '#b8332f' }}>
-              {w.type} {formatMultiplier(w.maxMultiplier)} · {w.count}只
-            </span>
-          ))}
-        </div>
-      ) : (
-        <p className="muted">没有同一属性可以同时克制我方 2 只以上。</p>
-      )}
-
-      <h3 className="subhead">打击盲区</h3>
-      {metrics.coverageGaps.length ? (
-        <ul className="ai__list">
-          {metrics.coverageGaps.map((g) => (
-            <li key={g.enemy}>
-              {g.enemy}（{g.enemyTypes.join('/')}）我方最高只有 {formatMultiplier(g.bestMultiplier)}
-              {g.bestBy ? `（${g.bestBy}）` : ''}
-            </li>
-          ))}
-        </ul>
-      ) : (
-        <p className="muted">无 · 敌方每只都有我方成员能打出 ≥2 倍。</p>
-      )}
-
-      <h3 className="subhead">首发建议（按对位打分）</h3>
-      <ol className="lead-list">
-        {metrics.ranked.slice(0, 3).map((r, i) => (
-          <li key={r.id} className={i === 0 ? 'is-lead' : ''}>
-            <span className="lead-list__name">{i === 0 ? '★ ' : ''}{r.name}</span>
-            <span className="lead-list__nums">
-              攻 {r.attack} · 受 {r.threat} · 速 {r.speedEdge > 0 ? `+${r.speedEdge}` : r.speedEdge}
-            </span>
-            <span className="lead-list__score">{r.score}</span>
-          </li>
-        ))}
-      </ol>
-      <p className="calc__footnote">打分 = 对敌平均进攻倍率 − 平均受威胁倍率 + 速度奖励，只用于排序，不代替模型判断。</p>
-
-      <h3 className="subhead">每只敌方的最佳答案</h3>
-      <ul className="answer-list">
-        {enemy.map((e, j) => {
-          const cells = mine
-            .map((_, i) => metrics.matrix[i][j])
-            .sort((a, b) => b.attack.multiplier - a.attack.multiplier || a.threat.multiplier - b.threat.multiplier || b.speedEdge - a.speedEdge);
-          const best = cells[0];
-          if (!best) return null;
-          return (
-            <li key={e.id}>
-              <span className="answer-list__enemy" title={e.name}>
+      <details className="matrix-details">
+        <summary>展开对位矩阵（我方 × 敌方 倍率表）</summary>
+        <div className="matrix-wrap">
+          <div
+            className="matrix"
+            style={{ gridTemplateColumns: `minmax(64px, 1.25fr) repeat(${enemy.length}, minmax(0, 1fr))` }}
+          >
+            <span className="matrix__corner">我方 \ 敌方</span>
+            {enemy.map((e) => (
+              <span key={e.id} className="matrix__col" title={e.name}>
                 {shortName(e.name)}
+                <small>{e.stats.total ?? '—'}</small>
               </span>
-              <span className="answer-list__best">
-                {shortName(best.myName)} <b>{formatMultiplier(best.attack.multiplier)}</b>
-                <small>
-                  受{formatMultiplier(best.threat.multiplier)} · 速{best.speedEdge > 0 ? `+${best.speedEdge}` : best.speedEdge}
-                </small>
-              </span>
-            </li>
-          );
-        })}
-      </ul>
+            ))}
+            {mine.map((m, i) => (
+              <Row key={m.id} mine={m} enemy={enemy} metrics={metrics} row={i} />
+            ))}
+          </div>
+        </div>
+        <p className="matrix__legend">
+          大号 = 我方用可学技能打对方的最高倍率；<span className="legend-dot is-strong" /> ≥2 倍优势，
+          <span className="legend-dot is-neutral" /> 1 倍，<span className="legend-dot is-weak" /> 被抵抗。小字 = 对方反打我方。
+        </p>
+      </details>
 
       <div className="shared-resist">
         <h3 className="subhead">我方共同抵抗</h3>

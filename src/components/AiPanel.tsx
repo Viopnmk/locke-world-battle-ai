@@ -1,19 +1,20 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import { spirits } from '../lib/spirits';
+import { useCallback, useMemo, useRef, useState } from 'react';
+import { meta, spirits } from '../lib/spirits';
 import type { Spirit } from '../lib/types';
 import { teamMetrics } from '../lib/analysis';
+import { teamBrief } from '../lib/tactics';
 import { tint, typeColor } from '../lib/typeChart';
 import {
   DEFAULT_MODEL,
   FALLBACK_MODELS,
   analyzeTeam,
   aiEndpoint,
-  checkHealth,
   loadModels,
   type AiModel,
   type AiResult,
 } from '../services/ai-client';
 import { AiAnswer } from './AiAnswer';
+import { LocalBriefView } from './LocalBriefView';
 import { SpiritPicker } from './SpiritPicker';
 import { TeamAnalysis } from './TeamAnalysis';
 
@@ -27,43 +28,38 @@ function byName(name: string): Spirit | null {
   return spirits.find((s) => s.name === name) ?? null;
 }
 
+/**
+ * 对战页：本地战术引擎为主（离线、0 延迟），云端大模型只是可选的润色层，
+ * 折叠在 details 里，默认不发起任何网络请求。
+ */
 export function AiPanel() {
   const [mine, setMine] = useState<Spirit[]>([]);
   const [enemy, setEnemy] = useState<Spirit[]>([]);
   const [picker, setPicker] = useState<null | 'mine' | 'enemy'>(null);
 
+  const briefRef = useRef<HTMLDivElement | null>(null);
+
+  /* 云端大模型（可选）——只有展开 details 才会拉模型列表 */
+  const [cloudOpen, setCloudOpen] = useState(false);
   const [models, setModels] = useState<AiModel[]>(FALLBACK_MODELS);
   const [model, setModel] = useState(DEFAULT_MODEL);
-  const [provider, setProvider] = useState('workers-ai');
-  const [online, setOnline] = useState<'checking' | 'ok' | 'down'>('checking');
+  const [cloudLoaded, setCloudLoaded] = useState(false);
 
   const [result, setResult] = useState<AiResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
-  useEffect(() => {
-    let alive = true;
-    checkHealth()
-      .then((h) => {
-        if (!alive) return;
-        setOnline('ok');
-        setProvider(h.provider);
-      })
-      .catch(() => {
-        if (alive) setOnline('down');
-      });
-    loadModels().then((m) => {
-      if (!alive) return;
-      setModels(m.models);
-      setProvider(m.provider);
-      setModel((cur) => (m.models.some((x) => x.id === cur) ? cur : m.defaultModel));
-    });
-    return () => {
-      alive = false;
-    };
-  }, []);
+  const ready = mine.length > 0 && enemy.length > 0;
 
-  const metrics = useMemo(() => (mine.length && enemy.length ? teamMetrics(mine, enemy) : null), [mine, enemy]);
+  /** 本地引擎：两边各 1 只起就有结论，纯计算，数据变了立刻重算 */
+  const analysis = useMemo(() => {
+    if (!ready) return null;
+    const t0 = performance.now();
+    const metrics = teamMetrics(mine, enemy);
+    const brief = teamBrief(mine, enemy, metrics);
+    const ms = Math.max(0.1, Math.round((performance.now() - t0) * 10) / 10);
+    return { metrics, brief, ms };
+  }, [mine, enemy, ready]);
 
   const resetResult = () => {
     setResult(null);
@@ -100,17 +96,22 @@ export function AiPanel() {
     resetResult();
   };
 
-  async function run() {
+  function openCloud() {
+    setCloudOpen(true);
+    if (cloudLoaded) return;
+    setCloudLoaded(true);
+    loadModels().then((m) => {
+      setModels(m.models);
+      setModel((cur) => (m.models.some((x) => x.id === cur) ? cur : m.defaultModel));
+    });
+  }
+
+  async function runCloud() {
     if (!mine.length || !enemy.length) return;
     setBusy(true);
     setError(null);
     try {
-      const res = await analyzeTeam(
-        mine.map((s) => s.id),
-        enemy.map((s) => s.id),
-        model,
-      );
-      setResult(res);
+      setResult(await analyzeTeam(mine.map((s) => s.id), enemy.map((s) => s.id), model));
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -118,24 +119,25 @@ export function AiPanel() {
     }
   }
 
-  const canRun = mine.length > 0 && enemy.length > 0 && !busy;
+  function scrollToBrief() {
+    briefRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
 
   return (
     <div className="ai">
-      <section className="panel">
+      <section className="panel panel--engine">
         <h2 className="panel__title">
-          双方阵容分析 <span className="panel__hint">Workers AI · 免费额度</span>
+          本地实战分析引擎 <span className="panel__hint">图鉴直算 · 离线可用</span>
         </h2>
         <p className="ai__lead">
-          先选我方与敌方各 1–6 只精灵：页面用图鉴数据算出对位矩阵、共同弱点与速度差；再由模型写阵容互补、首发与换人。
-          模型只拿到服务器端核验过的数据，回答里的数字会再校验一遍。
+          选好双方阵容，页面直接用内置的 {meta.spiritCount} 只形态种族值、18 系倍率表和全部可学技能算出首发、
+          逐只应对与联防盲区。<strong>不联网、不排队、打开就有结果</strong>，手机流量或弱网下同样可用。
         </p>
-        <div className="ai__status">
-          <span className={online === 'ok' ? 'dot dot--on' : online === 'down' ? 'dot dot--off' : 'dot'} aria-hidden="true" />
-          {online === 'ok' ? 'Worker 在线' : online === 'down' ? 'Worker 暂时连不上 · 仅本地确定性格分析可用' : '正在检测 Worker…'}
-          <span className="ai__model">{provider === 'openai-compatible' ? '外部网关（Worker 侧配置）' : 'Cloudflare Workers AI（无需 API Key）'}</span>
+        <div className="engine-pills">
+          <span className="engine-pill">⚡ 0 延迟计算</span>
+          <span className="engine-pill">📴 离线可用</span>
+          <span className="engine-pill">🔢 数字全部来自图鉴</span>
         </div>
-        <p className="source-line">端点：{aiEndpoint}</p>
       </section>
 
       <section className="panel">
@@ -170,20 +172,48 @@ export function AiPanel() {
           onRemove={(id) => removeSpirit('enemy', id)}
         />
 
-        {!mine.length || !enemy.length ? (
-          <p className="ai__hint">两边各至少选 1 只，下面的对位矩阵和 AI 按钮才会启用。</p>
-        ) : null}
+        <button type="button" className="primary-button" onClick={scrollToBrief} disabled={!ready}>
+          {ready ? '⚡ 生成本地实战分析' : '两边各选 1 只后即可生成'}
+        </button>
+        <p className="ai__hint">
+          {ready ? '阵容一改，下面的分析即时重算（点按钮直接跳过去）。' : '两边各至少选 1 只精灵。'}
+        </p>
       </section>
 
-      {metrics ? <TeamAnalysis mine={mine} enemy={enemy} metrics={metrics} /> : null}
+      {analysis ? (
+        <section className="panel panel--engine-result" ref={briefRef} id="local-battle-brief">
+          <div className="engine-result__head">
+            <h2 className="panel__title">本地实战分析</h2>
+            <span className="engine-result__stamp">
+              {analysis.ms}ms · {analysis.brief.sections.reduce((n, s) => n + s.lines.length, 0)} 条结论
+            </span>
+          </div>
+          <LocalBriefView brief={analysis.brief} />
+        </section>
+      ) : null}
 
-      <section className="panel panel--ai">
-        <h2 className="panel__title">
-          AI 战术分析 <span className="panel__hint">服务器端核验 + 数字溯源</span>
-        </h2>
-        <div className="ai__pickers ai__pickers--row">
-          <label>
-            <span>模型（可切换）</span>
+      {analysis ? <TeamAnalysis mine={mine} enemy={enemy} metrics={analysis.metrics} /> : null}
+
+      <details
+        className="cloud-ai"
+        open={cloudOpen}
+        onToggle={(e) => {
+          const opened = (e.currentTarget as HTMLDetailsElement).open;
+          setCloudOpen(opened);
+          if (opened) openCloud();
+        }}
+      >
+        <summary>
+          可选：连接云端大模型
+          <span className="cloud-ai__sub">不在系统里排队，只给文字加解说；需要能访问 workers.dev</span>
+        </summary>
+        <div className="cloud-ai__body">
+          <p className="ai__lead">
+            本页所有结论已经由本地引擎给出。这里的模型只把同样的数据写成更像解说的句子，数字仍以本地计算为准；
+            连不上也不影响上面的分析。
+          </p>
+          <label className="cloud-ai__model">
+            <span>模型</span>
             <select value={model} onChange={(e) => setModel(e.target.value)} disabled={busy}>
               {models.map((m) => (
                 <option key={m.id} value={m.id}>
@@ -193,41 +223,21 @@ export function AiPanel() {
               ))}
             </select>
           </label>
+          <button type="button" className="ghost-button" onClick={runCloud} disabled={!ready || busy}>
+            {busy ? '模型分析中…' : '调用云端模型再写一遍'}
+          </button>
+          <p className="source-line">端点：{aiEndpoint}</p>
+
+          {error ? (
+            <div className="ai__error">
+              <p>云端模型没连上：{error}</p>
+              <p>不影响使用——上面的本地分析已经算完，无需重试。</p>
+            </div>
+          ) : null}
+
+          {result ? <AiAnswer result={result} /> : null}
         </div>
-        <p className="ai__hint">
-          {models.find((m) => m.id === model)?.note ?? '免费模型'} · 通常 3–10 秒
-        </p>
-
-        <button type="button" className="primary-button" onClick={run} disabled={!canRun}>
-          {busy ? '模型分析中…' : result ? '重新生成分析' : '生成 AI 战术分析'}
-        </button>
-
-        <details className="request-preview">
-          <summary>查看将发送给 Worker 的数据</summary>
-          <pre>
-            {JSON.stringify(
-              {
-                mode: 'team',
-                model,
-                myTeam: mine.map((s) => s.name),
-                enemyTeam: enemy.map((s) => s.name),
-                note: '只传精灵名称/ID；种族值、技能与倍率由 Worker 从图鉴数据重新解析',
-              },
-              null,
-              2,
-            )}
-          </pre>
-        </details>
-
-        {error ? (
-          <div className="ai__error">
-            <strong>{error}</strong>
-            <p>本地确定性分析仍然有效；也可以换一个模型或稍后重试。</p>
-          </div>
-        ) : null}
-
-        {result ? <AiAnswer result={result} /> : null}
-      </section>
+      </details>
 
       <SpiritPicker
         open={picker !== null}

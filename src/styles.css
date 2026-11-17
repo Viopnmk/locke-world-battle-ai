@@ -1916,3 +1916,257 @@ a {
   font-size: 10px;
   color: var(--muted);
 }
+
+/* ---------------------------------------------------------------- 本地战术引擎 */
+.panel--engine {
+  background: linear-gradient(158deg, #eef4e9, #fffdf8 62%);
+  border-color: #dde6d5;
+}
+
+.engine-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.engine-pill {
+  padding: 5px 10px;
+  border-radius: 999px;
+  background: #fff;
+  border: 1px solid var(--line);
+  font-size: 11px;
+  color: var(--ink-soft);
+  white-space: nowrap;
+}
+
+.panel--engine-result {
+  border-color: #e6d9b6;
+  background: linear-gradient(180deg, #fffbef, #fffdf8 40%);
+}
+
+.engine-result__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.engine-result__head .panel__title {
+  margin: 0;
+}
+
+.engine-result__stamp {
+  flex: none;
+  font-size: 10.5px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.local-brief {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+
+.local-brief__headline {
+  margin: 0;
+  padding: 10px 11px;
+  border-radius: var(--radius-sm);
+  background: #f4efe1;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.6;
+  color: var(--ink);
+  word-break: break-word;
+}
+
+.local-brief__section {
+  padding-top: 9px;
+  border-top: 1px dashed var(--line);
+}
+
+.local-brief__section:first-of-type {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.local-brief__title {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 0 0 6px;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.local-brief__no {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  display: grid;
+  place-items: center;
+  border-radius: 6px;
+  background: #2f3a35;
+  color: #f7f4ec;
+  font-size: 10.5px;
+  font-weight: 700;
+}
+
+.local-brief__lines {
+  margin: 0;
+  padding-left: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.local-brief__lines li {
+  font-size: 12.5px;
+  line-height: 1.68;
+  color: var(--ink-soft);
+  word-break: break-word;
+}
+
+.local-brief__lines li::marker {
+  color: #c8ab63;
+}
+
+.local-brief__foot {
+  margin: 4px 0 0;
+  font-size: 10.5px;
+  line-height: 1.6;
+  color: var(--muted);
+  word-break: break-word;
+}
+
+.local-brief__stamp {
+  margin-left: 6px;
+  color: #a89a76;
+}
+
+/* 对位矩阵折叠区 */
+.matrix-details {
+  margin-top: 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: #fffdf8;
+  overflow: hidden;
+}
+
+.matrix-details > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 11px 12px;
+  font-size: 12.5px;
+  color: var(--ink-soft);
+  list-style: none;
+  cursor: pointer;
+}
+
+.matrix-details > summary::-webkit-details-marker {
+  display: none;
+}
+
+.matrix-details > summary::after {
+  content: '▾';
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.matrix-details[open] > summary::after {
+  content: '▴';
+}
+
+.matrix-details .matrix-wrap {
+  padding: 0 10px;
+}
+
+.matrix-details .matrix__legend {
+  padding: 0 12px 11px;
+}
+
+/* 可选的云端模型入口 */
+.cloud-ai {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--card);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+
+.cloud-ai > summary {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 13px 14px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--ink-soft);
+  list-style: none;
+  cursor: pointer;
+}
+
+.cloud-ai > summary::-webkit-details-marker {
+  display: none;
+}
+
+.cloud-ai > summary::before {
+  content: '☁︎ ';
+}
+
+.cloud-ai__sub {
+  font-size: 10.5px;
+  font-weight: 400;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.cloud-ai__body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 0 14px 14px;
+  border-top: 1px solid var(--line);
+  padding-top: 12px;
+}
+
+.cloud-ai__body .ai__lead {
+  margin: 0;
+}
+
+.cloud-ai__model {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 11.5px;
+  color: var(--muted);
+}
+
+.cloud-ai__model select {
+  min-height: 40px;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line);
+  background: #fffdf8;
+  font-size: 13px;
+  color: var(--ink);
+}
+
+.cloud-ai .ghost-button {
+  margin-top: 0;
+}
+
+.cloud-ai .ai__error p {
+  margin: 0;
+}
+
+.cloud-ai .ai__error p + p {
+  margin-top: 4px;
+  color: var(--muted);
+}

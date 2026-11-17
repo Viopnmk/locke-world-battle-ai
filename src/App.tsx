@@ -32,7 +32,7 @@ const TABS: { key: Tab; label: string; icon: JSX.Element }[] = [
   },
   {
     key: 'ai',
-    label: 'AI 分析',
+    label: '对战',
     icon: (
       <svg viewBox="0 0 24 24" aria-hidden="true">
         <path d="M12 3.5 14 9l5.5 2-5.5 2-2 5.5-2-5.5L4.5 11 10 9l2-5.5Z" />

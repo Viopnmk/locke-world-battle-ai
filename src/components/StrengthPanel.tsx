@@ -1,17 +1,25 @@
 import { useEffect, useMemo, useState } from 'react';
 import { spiritMetrics, STAT_KEYS, TIER_LABEL } from '../lib/analysis';
+import { spiritBrief } from '../lib/tactics';
 import type { Spirit } from '../lib/types';
 import { formatMultiplier, tint, typeColor } from '../lib/typeChart';
 import { analyzeSpirit, DEFAULT_MODEL, loadModels, type AiModel, type AiResult } from '../services/ai-client';
 import { AiAnswer } from './AiAnswer';
+import { LocalBriefView } from './LocalBriefView';
 
 interface Props {
   spirit: Spirit;
 }
 
-/** 单只精灵的确定性强度拆解 + Worker AI 深度解析。 */
+/**
+ * 单只精灵：图鉴数据拆解 + 本地战术解读（离线直算）。
+ * 云端模型只作为可选补充，收在页面最下面的 details 里。
+ */
 export function StrengthPanel({ spirit }: Props) {
   const metrics = useMemo(() => spiritMetrics(spirit), [spirit]);
+  const brief = useMemo(() => spiritBrief(spirit, metrics), [spirit, metrics]);
+
+  const [cloudLoaded, setCloudLoaded] = useState(false);
   const [models, setModels] = useState<AiModel[]>([]);
   const [model, setModel] = useState(DEFAULT_MODEL);
   const [result, setResult] = useState<AiResult | null>(null);
@@ -19,21 +27,18 @@ export function StrengthPanel({ spirit }: Props) {
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
-    let alive = true;
-    loadModels().then((m) => {
-      if (!alive) return;
-      setModels(m.models);
-      setModel((cur) => (m.models.some((x) => x.id === cur) ? cur : m.defaultModel));
-    });
-    return () => {
-      alive = false;
-    };
-  }, []);
-
-  useEffect(() => {
     setResult(null);
     setError(null);
   }, [spirit.id]);
+
+  function openCloud() {
+    if (cloudLoaded) return;
+    setCloudLoaded(true);
+    loadModels().then((m) => {
+      setModels(m.models);
+      setModel((cur) => (m.models.some((x) => x.id === cur) ? cur : m.defaultModel));
+    });
+  }
 
   async function run() {
     setBusy(true);
@@ -95,8 +100,16 @@ export function StrengthPanel({ spirit }: Props) {
           ))}
         </div>
         <p className="calc__footnote">
-          百分位 = 图鉴 662 只中不超过该数值的比例；定位标签按速度、输出与耐久百分位自动生成。
+          百分位 = 图鉴 {metrics.total.population} 只中不超过该数值的比例；定位标签按速度、输出与耐久百分位自动生成。
         </p>
+      </section>
+
+      <section className="panel panel--engine-result">
+        <div className="engine-result__head">
+          <h2 className="panel__title">本地战术解读</h2>
+          <span className="engine-result__stamp">0 延迟 · 不上传数据</span>
+        </div>
+        <LocalBriefView brief={brief} />
       </section>
 
       <section className="panel">
@@ -184,18 +197,24 @@ export function StrengthPanel({ spirit }: Props) {
         ) : null}
       </section>
 
-      <section className="panel panel--ai">
-        <h2 className="panel__title">
-          AI 深度解析 <span className="panel__hint">Workers AI · 免费额度</span>
-        </h2>
-        <p className="ai__lead">
-          把这只精灵的已核验数据发给模型，让它写定位、配招和使用要点；数字仍以上面的图鉴计算为准。
-        </p>
-        <div className="ai__pickers ai__pickers--row">
-          <label>
+      <details
+        className="cloud-ai"
+        onToggle={(e) => {
+          if ((e.currentTarget as HTMLDetailsElement).open) openCloud();
+        }}
+      >
+        <summary>
+          可选：云端大模型深度解析
+          <span className="cloud-ai__sub">需要能访问 workers.dev；不展开就完全不联网</span>
+        </summary>
+        <div className="cloud-ai__body">
+          <p className="ai__lead">
+            上面的解读已经由本地引擎写完。这里的模型只是把同样的数据换一种写法，数字仍以本地计算为准。
+          </p>
+          <label className="cloud-ai__model">
             <span>模型</span>
             <select value={model} onChange={(e) => setModel(e.target.value)} disabled={busy}>
-              {(models.length ? models : [{ id: DEFAULT_MODEL, label: 'GPT-OSS 20B', note: '', recommended: true }]).map((m) => (
+              {(models.length ? models : [{ id: DEFAULT_MODEL, label: 'GLM 4.7 Flash', note: '', recommended: true }]).map((m) => (
                 <option key={m.id} value={m.id}>
                   {m.label}
                   {m.recommended ? ' · 推荐' : ''}
@@ -203,13 +222,18 @@ export function StrengthPanel({ spirit }: Props) {
               ))}
             </select>
           </label>
+          <button type="button" className="ghost-button" onClick={run} disabled={busy}>
+            {busy ? '模型分析中…' : '调用云端模型再写一遍'}
+          </button>
+          {error ? (
+            <div className="ai__error">
+              <p>云端模型没连上：{error}</p>
+              <p>不影响使用——本页结论全部来自本地计算。</p>
+            </div>
+          ) : null}
+          {result ? <AiAnswer result={result} /> : null}
         </div>
-        <button type="button" className="primary-button" onClick={run} disabled={busy}>
-          {busy ? '模型分析中…（通常 3-10 秒）' : result ? '重新生成' : 'AI 深度解析'}
-        </button>
-        {error ? <p className="ai__error">{error}（上方确定性数据不受影响）</p> : null}
-        {result ? <AiAnswer result={result} /> : null}
-      </section>
+      </details>
     </>
   );
 }
