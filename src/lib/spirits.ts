@@ -8,8 +8,13 @@ export const spirits = spiritsData as unknown as Spirit[];
 export const learnsets = learnsetsData as unknown as Learnsets;
 export const meta = metaData as unknown as Meta;
 
-const skillById = new Map<string, Skill>((skillsData as unknown as Skill[]).map((s) => [s.id, s]));
+const skillByIdMap = new Map<string, Skill>((skillsData as unknown as Skill[]).map((s) => [s.id, s]));
 export const skills: Skill[] = skillsData as unknown as Skill[];
+
+/** Skill record by wiki id (`skill_000544`), for blood-line tables that only store ids. */
+export function skillById(id: string): Skill | undefined {
+  return skillByIdMap.get(id);
+}
 
 export const spiritsById = new Map<string, Spirit>(spirits.map((s) => [s.id, s]));
 
@@ -50,7 +55,7 @@ export function skillsOf(spirit: Spirit): ResolvedSkill[] {
   }
   const out: ResolvedSkill[] = [];
   for (const [id, code, level] of entries) {
-    const skill = skillById.get(id);
+    const skill = skillByIdMap.get(id);
     if (!skill) continue;
     out.push({ ...skill, learn: code as ResolvedSkill['learn'], level });
   }

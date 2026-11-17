@@ -3,11 +3,12 @@ import { SpiritList } from './components/SpiritList';
 import { SpiritDetail } from './components/SpiritDetail';
 import { TypeCalculator } from './components/TypeCalculator';
 import { AiPanel } from './components/AiPanel';
+import { BuildPage } from './pages/BuildPage';
 import { meta, searchSpirits, sortByDex, spirits, typeCounts } from './lib/spirits';
 import type { Spirit } from './lib/types';
 import { tint, typeColor } from './lib/typeChart';
 
-type Tab = 'dex' | 'chart' | 'ai';
+type Tab = 'dex' | 'chart' | 'build' | 'ai';
 
 const TABS: { key: Tab; label: string; icon: JSX.Element }[] = [
   {
@@ -31,6 +32,18 @@ const TABS: { key: Tab; label: string; icon: JSX.Element }[] = [
     ),
   },
   {
+    key: 'build',
+    label: '培养',
+    icon: (
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M12 21v-7" />
+        <path d="M12 14c0-4 2.5-7 7-7 0 4-2.7 7-7 7Z" />
+        <path d="M12 14C12 10.7 9.6 8 5 8c0 3.6 2.7 6 7 6Z" />
+        <path d="M6 21h12" />
+      </svg>
+    ),
+  },
+  {
     key: 'ai',
     label: '对战',
     icon: (
@@ -43,19 +56,24 @@ const TABS: { key: Tab; label: string; icon: JSX.Element }[] = [
 
 /**
  * Hash routes so any view can be opened directly and shared on a phone:
- * #/ (图鉴) · #/chart (克制) · #/ai (AI) · #/spirit/<id> (图鉴详情)
+ * #/ (图鉴) · #/chart (克制) · #/build[/<id>] (培养方案) · #/ai (AI) · #/spirit/<id> (图鉴详情)
  */
-function readHash(): { tab: Tab; spiritId: string | null } {
+function readHash(): { tab: Tab; spiritId: string | null; buildId: string | null } {
   const raw = window.location.hash.replace(/^#\/?/, '');
-  if (raw.startsWith('spirit/')) return { tab: 'dex', spiritId: raw.slice('spirit/'.length) };
-  if (raw === 'chart') return { tab: 'chart', spiritId: null };
-  if (raw === 'ai') return { tab: 'ai', spiritId: null };
-  return { tab: 'dex', spiritId: null };
+  if (raw.startsWith('spirit/')) return { tab: 'dex', spiritId: raw.slice('spirit/'.length), buildId: null };
+  if (raw.startsWith('build')) {
+    const id = raw.slice('build'.length).replace(/^\//, '');
+    return { tab: 'build', spiritId: null, buildId: id || null };
+  }
+  if (raw === 'chart') return { tab: 'chart', spiritId: null, buildId: null };
+  if (raw === 'ai') return { tab: 'ai', spiritId: null, buildId: null };
+  return { tab: 'dex', spiritId: null, buildId: null };
 }
 
 export default function App() {
   const initial = readHash();
   const [tab, setTab] = useState<Tab>(initial.tab);
+  const [buildId, setBuildId] = useState<string | null>(initial.buildId);
   const [query, setQuery] = useState('');
   const [typeFilter, setTypeFilter] = useState<string | null>(null);
   const [selected, setSelected] = useState<Spirit | null>(
@@ -69,6 +87,7 @@ export default function App() {
     const onHash = () => {
       const r = readHash();
       setTab(r.tab);
+      setBuildId(r.buildId);
       setSelected(r.spiritId ? spirits.find((s) => s.id === r.spiritId) ?? null : null);
       window.scrollTo({ top: 0 });
     };
@@ -91,6 +110,25 @@ export default function App() {
     go('#/');
   }, [go]);
 
+  /** 图鉴详情 → 培养方案：保留这只精灵，切到 #/build/<id>。 */
+  const openBuild = useCallback(
+    (spirit: Spirit) => {
+      setSelected(null);
+      setTab('build');
+      setBuildId(spirit.id);
+      go(`#/build/${spirit.id}`);
+    },
+    [go],
+  );
+
+  const pickBuildSpirit = useCallback(
+    (spirit: Spirit) => {
+      setBuildId(spirit.id);
+      go(`#/build/${spirit.id}`);
+    },
+    [go],
+  );
+
   useEffect(() => {
     window.scrollTo({ top: 0 });
   }, [tab]);
@@ -109,7 +147,8 @@ export default function App() {
   }
 
   function changeTab(next: Tab) {
-    const hash = next === 'chart' ? '#/chart' : next === 'ai' ? '#/ai' : '#/';
+    const hash =
+      next === 'chart' ? '#/chart' : next === 'build' ? `#/build${buildId ? `/${buildId}` : ''}` : next === 'ai' ? '#/ai' : '#/';
     if (next === 'dex') setSelected(null);
     setTab(next);
     go(hash);
@@ -210,6 +249,7 @@ export default function App() {
           </>
         ) : null}
 
+        {tab === 'build' ? <BuildPage spiritId={buildId} onPick={pickBuildSpirit} /> : null}
         {tab === 'chart' ? <TypeCalculator onOpenType={openType} /> : null}
         {tab === 'ai' ? <AiPanel /> : null}
       </main>
@@ -229,7 +269,9 @@ export default function App() {
         ))}
       </nav>
 
-      {selected ? <SpiritDetail spirit={selected} onClose={closeSpirit} onOpenType={openType} /> : null}
+      {selected ? (
+        <SpiritDetail spirit={selected} onClose={closeSpirit} onOpenType={openType} onOpenBuild={openBuild} />
+      ) : null}
     </div>
   );
 }

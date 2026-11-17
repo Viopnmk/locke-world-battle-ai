@@ -43,6 +43,29 @@
 - **云端大模型是可选层**：折叠在「可选：连接云端大模型」里，默认不加载、不发请求；连不上只会在这个
   折叠区里提示，页面其余部分照常可用。
 
+### Phase 4 · 培养方案（`#/build`，底部页签「培养」）
+
+按参考截图做的养成卡：一屏给出这只精灵的性格、个体值、四个携带技能与改血脉建议，
+全部由图鉴数据推演，页面不写死任何一只精灵的答案。
+
+- **顶栏快捷位**：总种族值最高的 6 个形态（同名形态只取一个）+ 当前精灵 + 搜索（全图鉴 662 只）。
+- **主卡**：左列形态标签 / 头像 / 名称 / 属性；右列 2×2 四个技能位，每位显示学习来源
+  （升级 / 技能石 / 血脉）、能耗 `★ N`、威力或「状态」、属性图标与技能名。
+- **性格**：从 Wiki 性格页的 30 种性格里选一主一备，显示 `+10% / -10%` 的两项与
+  `*增益数值成长 1 星为 10%，成长 5 星为 20%`（百分比口径来自游戏内说明，Wiki 只列提升/降低项）。
+- **个体值**：三项优先项（输出 → 生命/主攻/速度，耐久 → 生命/短板防御/主攻）。
+- **改血脉**：列出这只精灵在 18 系别血脉 + 普通血脉下各能拿到的血脉技能（Wiki 模块原文），
+  按流派挑最贴的一个，并给出 3 个备选；同时提示同族形态分支数量。
+- **详细模式**：可切换「速攻爆发 / 耐久消耗」两套流派，重算技能分、性格与个体值，
+  并逐条解释为什么是这个技能 / 性格 / 个体值 / 血脉（含真实种族值百分位、属性克制收益、特性协同）。
+- 实现：`src/lib/build-guide.ts`（引擎）+ `src/pages/BuildPage.tsx`（界面）。
+  `scripts/verify-build-guide.ts` 对 662 只形态 × 2 流派 = 1324 次调用做全量校验
+  （0 报错、0 undefined/NaN、技能全部来自自身学习面）。
+
+**数据**：`natures.json` 来自「性格」页的 `模块:Natures/data`（30 种性格与提升/降低项），
+`bloodlines.json` 来自 `模块:Pets/data/Learnsets` 的 `blood_skills`（每个学习面 19 个系别血脉技能），
+技能图标由 `模块:Pets/data/Skills` 的 `icon` 文件名经 `action=query&prop=imageinfo` 解析成真实上传地址。
+
 ### 防编造（anti-fabrication）
 
 - 前端只把**精灵 ID**发给 Worker；种族值、技能、特性、属性倍率全部由 Worker 从同一份图鉴 JSON
@@ -61,8 +84,9 @@
 ```
 index.html
 src/
-  App.tsx                  三个页签（图鉴 / 克制 / AI）与 hash 路由
+  App.tsx                  四个页签（图鉴 / 克制 / 培养 / 对战）与 hash 路由
   styles.css               移动端样式（390px 无横向溢出、触控目标 ≥ 44px）
+  pages/BuildPage.tsx      培养方案页（顶栏快捷位、四技能卡、性格/个体值/血脉、详细模式）
   components/
     SpiritList.tsx         列表与卡片
     SpiritDetail.tsx       详情页（种族值、特性、受击、技能、强度分析、AI 解析）
@@ -79,6 +103,7 @@ src/
     typeChart.ts           倍率查询、防守画像、文案
     analysis.ts            确定性强度 / 阵容 / 对位计算（与 Worker 同规则）
     tactics.ts             本地战术引擎：由图鉴数据生成中文解读（无网络、无模型）
+    build-guide.ts         培养方案引擎：四技能 / 性格 / 个体值 / 改血脉（全部由图鉴真数据推演）
   services/ai-client.ts    Worker 端点、模型列表、analyze 调用
   data/                    fetch-wiki.py 生成的产物（见下）
 worker/
@@ -89,8 +114,9 @@ worker/
   src/prompts.mjs          事实拼装、系统提示词、输出校验
   src/ai.mjs               模型清单、Workers AI 调用、错误翻译、分段解析
 scripts/
-  fetch-wiki.py            抓取 + 解析 + 生成 src/data/*.json
+  fetch-wiki.py            抓取 + 解析 + 生成 src/data/*.json（含性格、血脉技能、技能图标）
   lua_table.py             Wiki 数据模块的 Lua 表解析器
+  verify-build-guide.ts    培养方案全量校验（662 形态 × 2 流派）
 ```
 
 ## Worker 接口

@@ -52,9 +52,10 @@ interface Props {
   spirit: Spirit;
   onClose: () => void;
   onOpenType: (type: string) => void;
+  onOpenBuild: (spirit: Spirit) => void;
 }
 
-export function SpiritDetail({ spirit, onClose, onOpenType }: Props) {
+export function SpiritDetail({ spirit, onClose, onOpenType, onOpenBuild }: Props) {
   const skills = useMemo(() => skillsOf(spirit), [spirit]);
   const groups = useMemo(() => skillGroups(skills), [skills]);
   const profile = useMemo(() => defenceProfile(spirit.type), [spirit.type]);
@@ -98,6 +99,12 @@ export function SpiritDetail({ spirit, onClose, onOpenType }: Props) {
             <p className="detail__desc">{spirit.desc}</p>
           </div>
         </section>
+
+        <button type="button" className="build-entry" onClick={() => onOpenBuild(spirit)}>
+          <span>查看培养方案</span>
+          <small>性格 · 个体值 · 四个技能 · 改血脉</small>
+          <span aria-hidden="true">→</span>
+        </button>
 
         <section className="panel">
           <h2 className="panel__title">

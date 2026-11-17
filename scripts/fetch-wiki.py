@@ -14,10 +14,17 @@ Sources
      模块:Pets/data/Types                              type matchup matrix
      模块:Pets/Theme, 模块:Pets/data/Config             type colours / display order
      模块:TypeData                                    type icon files
-  3. Skill details joined from the learned-skill ids of each spirit's learnset.
+  3. 性格 page → 模块:Natures/data — the 30 natures with the stat each one
+     raises and the stat it lowers (the page itself renders that module).
+  4. Skill icons: the `icon` file name inside 模块:Pets/data/Skills is resolved to
+     its real upload URL through action=query&prop=imageinfo (File:<name>).
+  5. Skill details joined from the learned-skill ids of each spirit's learnset;
+     bloodline (血脉) skills are kept per learnset, one skill per 系别血脉.
 
 Usage:  python3 scripts/fetch-wiki.py [--offline]
-Output: src/data/spirits.json, src/data/type-chart.json, src/data/meta.json
+Output: src/data/spirits.json, src/data/learnsets.json, src/data/skills.json,
+        src/data/natures.json, src/data/bloodlines.json, src/data/type-chart.json,
+        src/data/meta.json
 Raw responses are cached under .cache/wiki/ (gitignored) so a rerun is cheap.
 """
 
@@ -25,6 +32,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import hashlib
 import json
 import os
 import re
@@ -64,6 +72,7 @@ MODULES = [
     "模块:精灵图鉴/S5/数据/技能",
     "模块:精灵图鉴/S5/数据/特性",
     "模块:精灵图鉴/S5/数据/辅助",
+    "模块:Natures/data",
 ]
 
 TZ = dt.timezone(dt.timedelta(hours=8))
@@ -113,6 +122,36 @@ def module_source(title: str, *, offline: bool) -> str:
         if "revisions" in page:
             return page["revisions"][0]["slots"]["main"]["*"]
     raise SystemExit(f"wiki module missing: {title}")
+
+
+def skill_icon_urls(filenames: list[str], *, offline: bool) -> dict[str, str | None]:
+    """Resolve `File:<name>` to the upload URL the wiki serves, 50 files a call.
+
+    Names come from the `icon` field of 模块:Pets/data/Skills; nothing is guessed —
+    a file the wiki does not have simply resolves to None and the UI draws a
+    type/category icon instead.
+    """
+    out: dict[str, str | None] = {}
+    files = sorted({f for f in filenames if f})
+    for start in range(0, len(files), 50):
+        batch = files[start:start + 50]
+        titles = "|".join("File:" + f for f in batch)
+        url = API + "?" + urllib.parse.urlencode({
+            "action": "query", "prop": "imageinfo", "iiprop": "url",
+            "format": "json", "formatversion": "2", "titles": titles,
+        })
+        key = "icons_" + hashlib.md5(titles.encode("utf-8")).hexdigest()[:16]
+        payload = json.loads(http_get(url, cache_name=key, offline=offline))
+        normalized = {n["from"]: n["to"] for n in payload.get("query", {}).get("normalized", [])}
+        by_title: dict[str, str] = {}
+        for page in payload.get("query", {}).get("pages", []):
+            info = page.get("imageinfo") or []
+            if info:
+                by_title[page["title"]] = info[0]["url"]
+        for name in batch:
+            full = "File:" + name
+            out[name] = by_title.get(normalized.get(full, full))
+    return out
 
 
 # --------------------------------------------------------------- roster (HTML)
@@ -262,7 +301,7 @@ def main() -> None:
     ap.add_argument("--offline", action="store_true", help="use the cached responses only")
     args = ap.parse_args()
 
-    print("[1/6] roster page 精灵列表")
+    print("[1/7] roster page 精灵列表")
     html = http_get(LIST_URL, cache_name="page_" + LIST_PAGE, offline=args.offline)
     rows, cols, page_total = parse_roster(html)
     print(f"  columns: {', '.join(cols)}")
@@ -270,7 +309,7 @@ def main() -> None:
     if page_total is not None and page_total != len(rows):
         raise SystemExit("roster row count does not match the page total — refusing to publish")
 
-    print("[2/6] Lua data modules")
+    print("[2/7] Lua data modules")
     mods = {title: (parse_lua_table(module_source(title, offline=args.offline))
                     if title != "模块:TypeData" else module_source(title, offline=args.offline))
             for title in MODULES}
@@ -349,6 +388,32 @@ def main() -> None:
     used_skill_ids = {row[0] for entries in learnset_out.values() for row in entries}
     used_skill_ids |= {sid for extra in season_stones.values()
                        if isinstance(extra, dict) for sid in extra.get("skill_stones") or []}
+
+    # ---- blood-line skills (血脉): every learnset carries one skill per 系别血脉
+    # The wiki stores them as {blood, level, skill}; the set differs per learnset,
+    # so identical sets are folded together and referenced by a short id.
+    blood_levels: dict[str, int | None] = {}
+    blood_sets: dict[str, dict[str, str]] = {}
+    learnset_blood: dict[str, str] = {}
+    for ls_id, ls in learnsets.items():
+        if not isinstance(ls, dict) or not learnset_out.get(ls_id):
+            continue
+        pairs: list[tuple[str, str]] = []
+        for item in ls.get("blood_skills") or []:
+            if not isinstance(item, dict):
+                continue
+            blood, skill = item.get("blood"), item.get("skill")
+            if not blood or not skill or skill not in skill_index:
+                continue
+            pairs.append((blood, skill))
+            blood_levels[blood] = to_int(str(item.get("level")))
+        if not pairs:
+            continue
+        signature = "|".join(f"{b}:{s}" for b, s in sorted(pairs))
+        if signature not in blood_sets:
+            blood_sets[signature] = {b: s for b, s in sorted(pairs)}
+        learnset_blood[ls_id] = signature
+    used_skill_ids |= {sid for group in blood_sets.values() for sid in group.values()}
 
     # ---- roster records
     spirits = []
@@ -430,7 +495,7 @@ def main() -> None:
     spirits.sort(key=lambda s: (int(s["dex"]) if s["dex"].isdigit() else 9999, s["id"]))
 
     # ---- type chart
-    print("[3/6] type chart 模块:Pets/data/Types")
+    print("[3/7] type chart 模块:Pets/data/Types")
     chart_raw = mods["模块:Pets/data/Types"]
     theme = mods["模块:Pets/Theme"]
     colors = theme.get("colors") or {}
@@ -527,6 +592,76 @@ def main() -> None:
         "uniqueLearnableSkills": len(used_skill_ids),
     }
     skill_out = [skill_index[sid] for sid in sorted(used_skill_ids)]
+
+    # ---- real skill icons: the file name in the skills module, resolved to its upload URL
+    print("[4/7] skill icons (File:<name> → upload URL)")
+    icon_map = skill_icon_urls(
+        [skills_raw[sid].get("icon") for sid in used_skill_ids if isinstance(skills_raw.get(sid), dict)],
+        offline=args.offline,
+    )
+    icons_missing = 0
+    for rec in skill_out:
+        name = (skills_raw.get(rec["id"]) or {}).get("icon") or ""
+        url = icon_map.get(name) if name else None
+        rec["icon"] = url
+        if name and not url:
+            icons_missing += 1
+    print(f"  icons resolved: {len(icon_map) - icons_missing}/{len(icon_map)}   no icon field: "
+          f"{sum(1 for r in skill_out if not r['icon'])}")
+
+    # ---- natures (性格): 模块:Natures/data — 30 natures, the stat each raises / lowers
+    print("[5/7] natures 模块:Natures/data")
+    stat_keys = {"生命": "hp", "物攻": "atk", "物防": "def",
+                 "魔攻": "spa", "魔防": "spd", "速度": "spe"}
+    nature_src = mods["模块:Natures/data"]
+    nature_stats = [{"id": s["id"], "name": s["name"]} for s in nature_src.get("stats") or []]
+    stat_name = {s["id"]: s["name"] for s in nature_stats}
+    unknown_stats = sorted({n for n in stat_name.values() if n not in stat_keys})
+    if unknown_stats or len(nature_stats) != 6:
+        raise SystemExit(f"nature stat table changed: {unknown_stats or len(nature_stats)}")
+    natures = []
+    for row in nature_src.get("rows") or []:
+        up, down = stat_name.get(row.get("up")), stat_name.get(row.get("down"))
+        if not up or not down:
+            raise SystemExit(f"nature without both stats: {row}")
+        natures.append({
+            "id": row["id"],
+            "name": row["name"],
+            "up": up,
+            "upKey": stat_keys[up],
+            "down": down,
+            "downKey": stat_keys[down],
+            "subnatures": list(row.get("subnatures") or []),
+        })
+    if len(natures) != 30:
+        raise SystemExit(f"expected the wiki's 30 natures, got {len(natures)}")
+    nature_out = {
+        "stats": nature_stats,
+        "statKeys": stat_keys,
+        "rows": natures,
+        "source": {
+            "module": "模块:Natures/data",
+            "moduleUrl": "https://wiki.biligame.com/nrc/模块:Natures/data",
+            "page": "https://wiki.biligame.com/nrc/性格",
+        },
+    }
+
+    # ---- blood-line table: learnset → 系别血脉 → the skill that blood grants
+    blood_index = {sig: f"bl_{i + 1:03d}" for i, sig in enumerate(sorted(blood_sets))}
+    bloodline_out = {
+        "levels": blood_levels,
+        "order": ["普通"] + [t for t in order if t in blood_levels],
+        "sets": {blood_index[sig]: group for sig, group in blood_sets.items()},
+        "learnset": {ls: blood_index[sig] for ls, sig in sorted(learnset_blood.items())},
+        "source": {
+            "module": "模块:Pets/data/Learnsets",
+            "moduleUrl": "https://wiki.biligame.com/nrc/模块:Pets/data/Learnsets",
+            "page": "https://wiki.biligame.com/nrc/万能血脉秘药（物品）",
+        },
+    }
+    coverage["bloodlineLearnsets"] = len(learnset_blood)
+    coverage["bloodlineSkills"] = len({sid for g in blood_sets.values() for sid in g.values()})
+
     by_type: dict[str, int] = {}
     for s in spirits:
         for t in s["type"]:
@@ -542,17 +677,22 @@ def main() -> None:
             {"name": "MediaWiki API（Lua 数据模块）", "url": API},
             {"name": "属性克制数据模块", "url": "https://wiki.biligame.com/nrc/模块:Pets/data/Types"},
             {"name": "克制计算器页面", "url": "https://wiki.biligame.com/nrc/克制计算器"},
+            {"name": "性格页（模块:Natures/data）", "url": "https://wiki.biligame.com/nrc/性格"},
+            {"name": "血脉技能（模块:Pets/data/Learnsets）", "url": "https://wiki.biligame.com/nrc/万能血脉秘药（物品）"},
         ],
         "fieldsFromWiki": [
             "id、图鉴编号、名称、属性、特性名与特性效果、生命/物攻/物防/魔攻/魔防/速度/总种族值、"
             "进化阶段、形态、归属赛季、蛋组、身高、体重、可骑乘/可同乘、精灵介绍、头像",
-            "技能：名称、属性、类别（物理/魔法/变化）、威力、能耗、效果文本、学习来源（等级/技能石/血脉）、等级",
+            "技能：名称、属性、类别（物理/魔法/变化）、威力、能耗、效果文本、学习来源（等级/技能石/血脉）、等级、图标",
             "属性克制：18 系单属性与双属性受击倍率、状态免疫",
+            "性格：30 种性格各自提升/降低的能力项、五种子性格名",
+            "血脉：每个学习面在 18 系别血脉 + 普通血脉下各继承一个血脉技能（Lv.15）",
         ],
         "notPublished": [
             "技能命中率（wiki 数据模块无此字段，未以默认值填充）",
             "技能 PP（本作以能耗计，无 PP 字段）",
             "隐藏特性等未在列表页公开的字段",
+            "性格的具体百分比（wiki 只列提升/降低项，界面的 10% / 20% 口径来自游戏内说明）",
         ],
         "coverage": coverage,
         "byType": by_type,
@@ -566,12 +706,14 @@ def main() -> None:
         },
     }
 
-    print("[4/6] writing JSON")
+    print("[6/7] writing JSON")
     os.makedirs(OUT_DATA, exist_ok=True)
     outputs = (
         ("spirits.json", spirits),
         ("learnsets.json", learnset_out),
         ("skills.json", skill_out),
+        ("natures.json", nature_out),
+        ("bloodlines.json", bloodline_out),
         ("type-chart.json", type_chart),
         ("meta.json", meta),
     )
@@ -581,9 +723,11 @@ def main() -> None:
             json.dump(obj, f, ensure_ascii=False, separators=(",", ":"))
         print(f"  wrote {os.path.relpath(path, ROOT)}  {os.path.getsize(path) / 1024:.0f} KiB")
 
-    print("\n[5/6] summary")
+    print("\nsummary")
     print(f"  spirits: {len(spirits)}   learnsets: {len(learnset_out)}   skills: {len(skill_out)}   "
           f"learnable entries: {coverage['learnsetEntries']}")
+    print(f"  natures: {len(natures)}   blood-line sets: {len(blood_sets)} "
+          f"(learnsets {coverage['bloodlineLearnsets']}, skills {coverage['bloodlineSkills']})")
     print(f"  trait {coverage['withTrait']} · desc {coverage['withDescription']} · "
           f"dual-type {coverage['dualType']} · season-tagged {coverage['withSeason']}")
     print(f"  type chart: {len(defense)} single + {len(pairs)} dual "
@@ -591,7 +735,7 @@ def main() -> None:
     if missing_skills:
         print(f"  WARNING no skills for {len(missing_skills)}: {missing_skills[:8]}")
 
-    print("[6/6] integrity checks")
+    print("[7/7] integrity checks")
     dup_pages = [s["page"] for s in spirits if [t["page"] for t in spirits].count(s["page"]) > 1]
     if dup_pages:
         print(f"  note: {len(set(dup_pages))} shared page titles (forms of one spirit): {sorted(set(dup_pages))[:6]}")
