@@ -23,3 +23,6 @@ __pycache__/
 .vscode/
 .idea/
 *.log
+
+# Wrangler 本地状态
+.wrangler/

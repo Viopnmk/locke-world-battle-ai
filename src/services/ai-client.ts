@@ -1,141 +1,153 @@
 /**
- * Adapter for the Phase 2 battle-analysis model (Cloudflare Workers AI).
- *
- * Phase 1 ships the interface and a deterministic, data-only pre-analysis that
- * runs entirely in the browser. No key, token or endpoint is written into the
- * repo: the endpoint and model come from build-time environment variables
- * (`VITE_AI_ENDPOINT`, `VITE_AI_MODEL`) and the worker is expected to hold the
- * credentials on its side, so the browser never sees one.
+ * Phase 2 客户端：调用 Cloudflare Worker（Workers AI，免费额度）。
+ * 仓库里没有任何密钥：端点只是公开 URL，模型由 Worker 侧调用。
  */
-import type { ResolvedSkill, Spirit } from '../lib/types';
-import { defenceProfile, formatMultiplier, matchup } from '../lib/typeChart';
-
-export interface AiConfig {
-  endpoint: string | null;
-  model: string;
-}
-
 const env = (import.meta as unknown as { env: Record<string, string | undefined> }).env ?? {};
 
-export const aiConfig: AiConfig = {
-  endpoint: env.VITE_AI_ENDPOINT?.trim() || null,
-  model: env.VITE_AI_MODEL?.trim() || '（未配置模型）',
-};
+/** 线上 Worker 地址；可用 VITE_AI_ENDPOINT 覆盖（例如本地 wrangler dev）。 */
+export const DEFAULT_ENDPOINT = 'https://locke-world-battle-ai-api.2310566637.workers.dev';
+export const aiEndpoint = (env.VITE_AI_ENDPOINT?.trim() || DEFAULT_ENDPOINT).replace(/\/$/, '');
 
-export const isAiConfigured = aiConfig.endpoint !== null;
-
-export interface BattleSide {
-  spirit: Spirit;
-  skills: ResolvedSkill[];
+export interface AiModel {
+  id: string;
+  label: string;
+  note: string;
+  recommended: boolean;
+  free?: boolean;
 }
 
-export interface BattleAnalysisRequest {
-  attacker: BattleSide;
-  defender: BattleSide;
+/** Worker 不可达时用于下拉框的兜底（与 Worker /models 保持一致）。 */
+export const FALLBACK_MODELS: AiModel[] = [
+  { id: '@cf/openai/gpt-oss-20b', label: 'GPT-OSS 20B', note: '响应快、中文稳，默认', recommended: true, free: true },
+  { id: '@cf/zai-org/glm-4.7-flash', label: 'GLM 4.7 Flash', note: '中文表达好，速度快', recommended: true, free: true },
+  { id: '@cf/meta/llama-4-scout-17b-16e-instruct', label: 'Llama 4 Scout 17B', note: '综合均衡', recommended: true, free: true },
+  { id: '@cf/mistralai/mistral-small-3.1-24b-instruct', label: 'Mistral Small 3.1 24B', note: '结构清晰，稍慢', recommended: false, free: true },
+  { id: '@cf/meta/llama-3.2-3b-instruct', label: 'Llama 3.2 3B', note: '极快，适合兜底', recommended: false, free: true },
+  { id: '@cf/deepseek-ai/deepseek-r1-distill-qwen-32b', label: 'DeepSeek R1 Distill 32B', note: '慢思考，耗时耗额度', recommended: false, free: true },
+];
+
+export const DEFAULT_MODEL = FALLBACK_MODELS[0].id;
+
+export interface AiSection {
+  title: string;
+  lines: string[];
 }
 
-export interface BattleAnalysis {
-  /** where the answer came from, so the UI never pretends a local calculation is a model */
-  origin: 'model' | 'local';
-  headline: string;
-  matchup: string[];
-  skillNotes: string[];
-  cautions: string[];
+export interface AiVerification {
+  grounded: boolean;
+  numbersChecked: number;
+  unverifiedNumbers: string[];
+  typeIssues: string[];
+  unknownTerms?: { term: string; kind: string }[];
+  outOfTeam?: string[];
+  retried?: boolean;
+  factsHash?: string;
+  note?: string;
 }
 
-export class AiNotConfiguredError extends Error {
-  constructor() {
-    super('未配置 AI 端点（VITE_AI_ENDPOINT）');
-    this.name = 'AiNotConfiguredError';
+export interface AiResult {
+  ok: true;
+  mode: 'spirit' | 'team' | 'battle';
+  provider: string;
+  model: string;
+  modelLabel: string;
+  answer: { headline: string; sections: AiSection[]; text: string; chars: number };
+  verification: AiVerification;
+  elapsedMs: number;
+  usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number; neurons?: number } | null;
+}
+
+export class AiRequestError extends Error {
+  code: string | number | null;
+  status: number;
+  constructor(message: string, code: string | number | null = null, status = 0) {
+    super(message);
+    this.name = 'AiRequestError';
+    this.code = code;
+    this.status = status;
   }
 }
 
-/** Chinese prompt grounded in the fetched wiki data; the worker only has to answer it. */
-export function buildPrompt(req: BattleAnalysisRequest): string {
-  const line = (side: BattleSide) => {
-    const s = side.spirit;
-    const stats = Object.entries(s.stats)
-      .filter(([k, v]) => k !== 'total' && v !== null)
-      .map(([k, v]) => `${k}:${v}`)
-      .join(' ');
-    const skills = side.skills
-      .slice(0, 8)
-      .map((k) => `${k.name}(${k.type || '无'}·${k.category}${k.power ? `·威力${k.power}` : ''}${k.energy ? `·能耗${k.energy}` : ''})`)
-      .join('、');
-    return `${s.name}｜属性 ${s.type.join('/')}｜${stats}｜总${s.stats.total}｜特性 ${s.trait?.name ?? '—'}：${s.trait?.effect ?? '—'}｜技能 ${skills}`;
-  };
-  return [
-    '你是《洛克王国：世界》的对战分析助手。只依据下面给出的图鉴数据回答，不要编造数值或技能。',
-    `进攻方：${line(req.attacker)}`,
-    `防守方：${line(req.defender)}`,
-    '请用简短中文输出：1) 属性克制结论（含倍率）2) 推荐 2 个技能及理由 3) 风险提示。总长度不超过 200 字。',
-  ].join('\n');
+async function request<T>(path: string, init: RequestInit = {}, timeoutMs = 120000): Promise<T> {
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(`${aiEndpoint}${path}`, {
+      ...init,
+      signal: controller.signal,
+      headers: { 'content-type': 'application/json', ...(init.headers ?? {}) },
+    });
+    const text = await res.text();
+    let data: unknown = null;
+    try {
+      data = text ? JSON.parse(text) : null;
+    } catch {
+      /* 非 JSON（例如网关 5xx HTML） */
+    }
+    if (!res.ok) {
+      const err = (data as { error?: { code?: string | number; message?: string } } | null)?.error;
+      throw new AiRequestError(err?.message || `AI 接口返回 ${res.status}`, err?.code ?? null, res.status);
+    }
+    return data as T;
+  } catch (e) {
+    if (e instanceof AiRequestError) throw e;
+    if (e instanceof DOMException && e.name === 'AbortError') {
+      throw new AiRequestError('请求超时，模型可能正在排队，请稍后重试', 'timeout');
+    }
+    throw new AiRequestError(`连不上 AI 接口：${e instanceof Error ? e.message : String(e)}`, 'network');
+  } finally {
+    window.clearTimeout(timer);
+  }
 }
 
-/** Deterministic pre-analysis from real data — used before the model is wired up. */
-export function analyzeLocally(req: BattleAnalysisRequest): BattleAnalysis {
-  const defTypes = req.defender.spirit.type;
-  const attackTypes = [...new Set(req.attacker.skills.map((s) => s.type).filter(Boolean))];
-  const best = attackTypes
-    .map((t) => ({ type: t, m: matchup(t, defTypes).multiplier }))
-    .sort((a, b) => b.m - a.m)[0];
+let modelsPromise: Promise<{ models: AiModel[]; defaultModel: string; provider: string }> | null = null;
 
-  const profile = defenceProfile(defTypes);
-  const headline = best
-    ? `用 ${best.type} 系技能打 ${defTypes.join('/')} 系：${formatMultiplier(best.m)}`
-    : '进攻方没有带属性的技能';
-
-  const skillNotes = req.attacker.skills
-    .filter((s) => s.power && s.type)
-    .map((s) => ({ s, m: matchup(s.type, defTypes).multiplier }))
-    .sort((a, b) => b.m * (b.s.power ?? 0) - a.m * (a.s.power ?? 0))
-    .slice(0, 3)
-    .map(({ s, m }) => `${s.name}（${s.type}·威力${s.power}${
-      s.energy !== null ? `·能耗${s.energy}` : ''
-    }）→ ${formatMultiplier(m)}`);
-
-  const cautions = [
-    profile.weak.length
-      ? `对手 ${defTypes.join('/')} 系被 ${profile.weak
-          .map((w) => `${w.type}${formatMultiplier(w.multiplier)}`)
-          .slice(0, 4)
-          .join('、')} 克制，注意别让对手先手。`
-      : '',
-    profile.resist.length
-      ? `${defTypes.join('/')} 系抵抗 ${profile.resist.map((r) => r.type).slice(0, 5).join('、')}，用这些属性收益低。`
-      : '',
-    req.defender.spirit.trait?.effect
-      ? `对手特性「${req.defender.spirit.trait.name}」：${req.defender.spirit.trait.effect}`
-      : '',
-  ].filter(Boolean);
-
-  return {
-    origin: 'local',
-    headline,
-    matchup: [
-      `进攻方 ${req.attacker.spirit.name}（${req.attacker.spirit.type.join('/')}）对阵 ${req.defender.spirit.name}（${defTypes.join('/')}）`,
-      `防守方总种族值 ${req.defender.spirit.stats.total ?? '—'}`,
-    ],
-    skillNotes,
-    cautions,
-  };
+/** 读取 Worker 的可用模型列表；失败时退回内置列表，保证下拉框永远能用。 */
+export function loadModels(): Promise<{ models: AiModel[]; defaultModel: string; provider: string }> {
+  if (!modelsPromise) {
+    modelsPromise = request<{ models: AiModel[]; defaultModel: string; provider: string }>('/models', {}, 8000)
+      .then((d) => ({
+        models: d.models?.length ? d.models : FALLBACK_MODELS,
+        defaultModel: d.defaultModel || DEFAULT_MODEL,
+        provider: d.provider || 'workers-ai',
+      }))
+      .catch(() => ({ models: FALLBACK_MODELS, defaultModel: DEFAULT_MODEL, provider: 'unknown' }));
+  }
+  return modelsPromise;
 }
 
-/** Calls the configured worker; falls back with a clear error when nothing is set. */
-export async function analyzeBattle(req: BattleAnalysisRequest): Promise<BattleAnalysis> {
-  if (!aiConfig.endpoint) throw new AiNotConfiguredError();
-  const res = await fetch(`${aiConfig.endpoint.replace(/\/$/, '')}/analyze`, {
+export interface HealthPayload {
+  ok: boolean;
+  service: string;
+  version: string;
+  provider: string;
+  defaultModel: string;
+  models: AiModel[];
+  counts: { spirits: number; types: number; skills: number };
+  free: { workersAi: boolean; externalKeyRequired: boolean; paidAddons: boolean };
+}
+
+export function checkHealth(): Promise<HealthPayload> {
+  return request<HealthPayload>('/health', {}, 8000);
+}
+
+export function analyzeSpirit(spiritId: string, model?: string): Promise<AiResult> {
+  return request<AiResult>('/analyze', {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ model: aiConfig.model, prompt: buildPrompt(req) }),
+    body: JSON.stringify({ mode: 'spirit', spiritId, model: model || undefined }),
   });
-  if (!res.ok) throw new Error(`AI 端点返回 ${res.status}`);
-  const data = (await res.json()) as Partial<BattleAnalysis>;
-  return {
-    origin: 'model',
-    headline: data.headline ?? '（模型未返回结论）',
-    matchup: data.matchup ?? [],
-    skillNotes: data.skillNotes ?? [],
-    cautions: data.cautions ?? [],
-  };
+}
+
+export function analyzeTeam(myTeam: string[], enemyTeam: string[], model?: string): Promise<AiResult> {
+  return request<AiResult>('/analyze', {
+    method: 'POST',
+    body: JSON.stringify({ mode: 'team', myTeam, enemyTeam, model: model || undefined }),
+  });
+}
+
+export function analyzeBattle(myTeam: string[], enemyTeam: string[], model?: string): Promise<AiResult> {
+  return request<AiResult>('/analyze', {
+    method: 'POST',
+    body: JSON.stringify({ mode: 'battle', myTeam, enemyTeam, model: model || undefined }),
+  });
 }

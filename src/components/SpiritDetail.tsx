@@ -2,6 +2,7 @@ import { useMemo } from 'react';
 import type { ResolvedSkill, Spirit } from '../lib/types';
 import { defenceProfile, formatMultiplier, tint, typeColor } from '../lib/typeChart';
 import { skillGroups, skillsOf, spirits } from '../lib/spirits';
+import { StrengthPanel } from './StrengthPanel';
 
 const STAT_LABELS: { key: keyof Spirit['stats']; label: string; color: string }[] = [
   { key: 'hp', label: '生命', color: '#57a773' },
@@ -181,6 +182,8 @@ export function SpiritDetail({ spirit, onClose, onOpenType }: Props) {
             ))
           )}
         </section>
+
+        <StrengthPanel spirit={spirit} />
 
         <section className="panel panel--quiet">
           <h2 className="panel__title">基础信息</h2>

@@ -1,44 +1,132 @@
 # 洛克对战助手 · locke-world-battle-ai
 
-《洛克王国：世界》(NRC) 的移动端图鉴与对战分析工具。React + TypeScript + Vite，纯静态站点，
-手机浏览器（iPhone 优先）打开即用。
+《洛克王国：世界》(NRC) 的移动端图鉴与对战分析工具。React + TypeScript + Vite 纯静态站点，
+外加一个 Cloudflare Worker 负责 AI 分析。手机浏览器（iPhone 优先）打开即用。
 
-**所有精灵数据都来自 BWIKI（https://wiki.biligame.com/nrc/）**，由 `scripts/fetch-wiki.py` 抓取并生成为
+**所有精灵数据都来自 BWIKI（https://wiki.biligame.com/nrc/）**，由 `scripts/fetch-wiki.py` 抓取并生成
 `src/data/*.json`；没有任何手写的数值、技能或克制关系。
 
-## 已实现（Phase 1）
+- 线上站点：https://locke-world-battle-ai.pages.dev
+- AI Worker：https://locke-world-battle-ai-api.2310566637.workers.dev
+- 仓库内不含任何 API Key / Token：Worker 使用 Cloudflare Workers AI 绑定，免费额度内运行。
+
+## 已实现
+
+### Phase 1 · 图鉴与克制
 
 - **精灵图鉴**：662 只形态，按名称 / 编号 / 属性搜索与筛选；详情页展示 Wiki 原值——编号、属性、
-  特性名与效果、六项种族值（含总种族值进度条）、身高体重、蛋组、骑乘、精灵介绍、学习面
-  （等级学习 / 技能石 / 血脉，含威力、能耗、效果文本），以及该属性组合的受击弱点与抵抗。
-- **属性克制计算器**：选择进攻属性 + 1~2 个防守属性，给出倍率（×0.25 / ×0.5 / ×1 / ×2 / ×3）、
-  结论、单属性与双属性来源说明、该组合在图鉴中的数量，并列出全部 18 系“怕什么”。
-- **AI 对战分析入口（Phase 2 预留）**：`src/services/ai-client.ts` 定义了 Cloudflare Workers AI
-  的调用约定（`VITE_AI_ENDPOINT` / `VITE_AI_MODEL`）、提示词构造，以及未接模型时的本地速算兜底。
-  仓库内不含任何 API Key / Token。
+  特性名与效果、六项种族值、身高体重、蛋组、骑乘、精灵介绍、学习面（等级学习 / 技能石 / 血脉，
+  含威力、能耗、效果文本），以及受击弱点与抵抗。
+- **属性克制计算器**：18 系 × 单/双属性，给出倍率（×0.25 / ×0.5 / ×1 / ×2 / ×3）、来源说明、
+  该组合在图鉴中的数量，并列出全部 18 系“怕什么”。
+
+### Phase 2 · 强度分析与 AI 战术
+
+- **精灵强度分析**（详情页）：全图鉴 662 只内的总种族值排名 / 百分位 / S–D 评级、六项单项百分位、
+  自动定位标签、进攻覆盖（能打出 ≥2 倍的属性、打不出克制的属性）、技能池构成与能耗效率。
+- **双方阵容分析**（`#/ai`）：我方 / 敌方各选 1–6 只（搜索 + 高种族值快捷选择），实时计算：
+  - 逐格对位矩阵（我方打对方的最高倍率 + 对方反打倍率 + 速度差）
+  - 我方共同弱点 / 共同抵抗 / 打击盲区
+  - 平均种族值差、最快速度对比、首发打分排序
+- **AI 战术分析**：模型下拉框可切换免费 Workers AI 模型；输出【结论】【阵容互补】【首发与换人】【风险】。
+- **AI 深度解析**（详情页）：针对单只精灵的定位、配招、使用要点与风险。
+
+### 防编造（anti-fabrication）
+
+- 前端只把**精灵 ID**发给 Worker；种族值、技能、特性、属性倍率全部由 Worker 从同一份图鉴 JSON
+  重新解析，不采信客户端自报数值。
+- Worker 用**服务器端数据**拼出【已核验事实】提示词，并明确禁止编造；事实里直接列出属性名称表、
+  技能克制面。
+- 回答生成后再做一次**自动校验**：数字是否都能在事实中找到、属性名是否真实、特性/技能名是否存在、
+  换人建议是否用了阵容外的精灵。命中问题会自动要求模型重写一次；仍存在的问题会在界面显示
+  “⚠ N 处未能在图鉴事实中溯源”，并列出具体条目。
+- 所有确定性计算（排名、矩阵、共同弱点、速度差）不经过模型，随 AI 回答一起返回并单独展示。
 
 ## 目录
 
 ```
 index.html
 src/
-  App.tsx                  三个页签（图鉴 / 克制 / AI）与搜索、筛选状态
+  App.tsx                  三个页签（图鉴 / 克制 / AI）与 hash 路由
   styles.css               移动端样式（390px 无横向溢出、触控目标 ≥ 44px）
   components/
     SpiritList.tsx         列表与卡片
-    SpiritDetail.tsx       详情页（种族值、特性、受击、技能、基础信息）
+    SpiritDetail.tsx       详情页（种族值、特性、受击、技能、强度分析、AI 解析）
     TypeCalculator.tsx     属性克制计算器
-    AiPanel.tsx            AI 入口与本地速算展示
+    AiPanel.tsx            双方阵容选择、对位矩阵、模型切换与 AI 战术分析
+    StrengthPanel.tsx      单只强度拆解 + AI 深度解析
+    TeamAnalysis.tsx       对位矩阵、共同弱点、打击盲区、首发打分
+    SpiritPicker.tsx       全图鉴搜索 / 快捷选择器
+    AiAnswer.tsx           分段回答 + 溯源徽章
   lib/
     types.ts               数据类型
     spirits.ts             索引、搜索、学习面解析
     typeChart.ts           倍率查询、防守画像、文案
-  services/ai-client.ts    Phase 2 模型适配层
+    analysis.ts            确定性强度 / 阵容 / 对位计算（与 Worker 同规则）
+  services/ai-client.ts    Worker 端点、模型列表、analyze 调用
   data/                    fetch-wiki.py 生成的产物（见下）
+worker/
+  wrangler.toml            name = locke-world-battle-ai-api，[ai] binding = "AI"
+  src/index.mjs            路由、CORS、限流、校验与响应组装
+  src/data.mjs             直接 import src/data/*.json，服务器端唯一数据源
+  src/analysis.mjs         确定性计算（与前端 analysis.ts 同规则）
+  src/prompts.mjs          事实拼装、系统提示词、输出校验
+  src/ai.mjs               模型清单、Workers AI 调用、错误翻译、分段解析
 scripts/
   fetch-wiki.py            抓取 + 解析 + 生成 src/data/*.json
   lua_table.py             Wiki 数据模块的 Lua 表解析器
 ```
+
+## Worker 接口
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET | `/health` | 服务状态、provider、默认模型、模型数量、数据统计 |
+| GET | `/models` | 本账号免费额度内**实测可用**的模型列表 |
+| GET | `/spirit/:key` | 图鉴数据 + 确定性强度指标（可按 `?vs=名字` 加单打对位） |
+| POST | `/analyze` | `{ mode: "spirit" \| "team" \| "battle", spiritId?, myTeam?, enemyTeam?, model? }` |
+
+```bash
+# 单只分析
+curl -X POST https://locke-world-battle-ai-api.2310566637.workers.dev/analyze \
+  -H 'content-type: application/json' \
+  -d '{"mode":"spirit","spiritId":"迪莫","model":"@cf/openai/gpt-oss-20b"}'
+
+# 双方阵容（1–6 只）
+curl -X POST https://locke-world-battle-ai-api.2310566637.workers.dev/analyze \
+  -H 'content-type: application/json' \
+  -d '{"mode":"team","myTeam":["迪莫","喵喵","水蓝蓝"],"enemyTeam":["火花","雪影娃娃","机械方方"]}'
+```
+
+`/analyze` 返回：`answer`（headline / sections / 原文）、`deterministic`（服务器端算出的指标与矩阵）、
+`verification`（溯源校验结果）、`usage`（tokens / neurons）、`elapsedMs`。
+
+### 可用模型（2026-11-18 在本账号实测）
+
+| 模型 ID | 说明 |
+| --- | --- |
+| `@cf/openai/gpt-oss-20b` | 默认。响应快、中文稳（`reasoning_effort: low`） |
+| `@cf/zai-org/glm-4.7-flash` | 中文表达好（关闭 thinking） |
+| `@cf/meta/llama-4-scout-17b-16e-instruct` | 综合均衡 |
+| `@cf/mistralai/mistral-small-3.1-24b-instruct` | 结构清晰 |
+| `@cf/meta/llama-3.2-3b-instruct` | 极快兜底 |
+| `@cf/deepseek-ai/deepseek-r1-distill-qwen-32b` | 慢思考，最细但耗时耗额度 |
+
+免费额度：Workers AI 每天 10,000 neurons（单次 3v3 约 20–60，6v6 约 100–120）。
+不升级计划、不启用付费模型；`/models` 与前端下拉框都不含付费模型。
+
+### 可选：外部 OpenAI 兼容网关
+
+以后若想换外部模型，在 Worker 侧配置 secrets 即可，前端不用改：
+
+```bash
+cd worker
+npx wrangler secret put OPENAI_BASE_URL   # 例如 https://api.openai.com/v1
+npx wrangler secret put OPENAI_API_KEY
+npx wrangler secret put OPENAI_MODEL     # 例如 gpt-4o-mini
+```
+
+配置后 `/health` 的 `provider` 会变成 `openai-compatible`，优先走外部网关。
 
 ## 数据
 
@@ -57,20 +145,20 @@ scripts/
   `模块:精灵图鉴/S5/数据/*`（当前赛季分片）、`模块:Pets/Theme`、`模块:TypeData`
 - `https://wiki.biligame.com/nrc/克制计算器`
 
-**没有编造任何数值**：Wiki 未公开的字段（技能命中率等）保持空白；技能 PP 在本作中不存在（以能耗计），
-因此不写入。双属性倍率中 Wiki 未发布而又出现在图鉴里的组合（目前只有「毒|幻」），
+Wiki 未公开的字段（技能命中率等）保持空白；技能 PP 在本作中不存在（以能耗计）。
+双属性倍率中 Wiki 未发布而图鉴里出现的组合（目前只有「毒|幻」），
 按 Wiki 已发布的 86 个组合全部验证成立的规则计算（单属性倍率相乘、上限 ×3），
-并在数据里以 `derivedPairs` 单独标注，界面上也会说明。
+并在数据里以 `derivedPairs` 单独标注。
 
 ### 重新抓取
 
 ```bash
-python3 scripts/fetch-wiki.py            # 联网抓取（缓存到 .cache/wiki/）
 python3 scripts/fetch-wiki.py --offline  # 只用缓存重新生成
+python3 scripts/fetch-wiki.py            # 联网抓取（缓存到 .cache/wiki/）
 ```
 
-脚本自带校验：行数必须与页面标注一致、属性必须都在克制表内、双属性规则必须能复现 Wiki 已发布值，
-否则拒绝生成。
+脚本自带校验：行数必须与页面标注一致、属性和技能必须都在克制表/技能表内、
+双属性规则必须能复现 Wiki 已发布值，否则拒绝生成。
 
 ## 开发与构建
 
@@ -78,14 +166,27 @@ python3 scripts/fetch-wiki.py --offline  # 只用缓存重新生成
 npm install
 npm run dev        # 本地开发
 npm run build      # tsc + vite build → dist/
-npm run preview    # 预览 dist/
 ```
 
-## 部署
+### Worker
 
-纯静态产物，`dist/` 可直接上传到 Cloudflare Pages / GitHub Pages。如需接 AI 模型，
-在构建环境设置 `VITE_AI_ENDPOINT`（Worker 地址）与 `VITE_AI_MODEL`，
-密钥保存在 Worker 一侧，前端不持有任何凭据。
+```bash
+export CLOUDFLARE_API_TOKEN=...     # 只在 shell 环境变量里，不写进仓库
+export CLOUDFLARE_ACCOUNT_ID=...
+cd worker
+npx wrangler deploy                 # 部署 locke-world-battle-ai-api
+npx wrangler dev                     # 本地调试（需 --remote 才有 AI 绑定）
+```
+
+### 部署前端
+
+```bash
+npm run build
+npx wrangler pages deploy dist --project-name=locke-world-battle-ai --branch=main
+```
+
+`VITE_AI_ENDPOINT` 可不配置：代码内默认指向线上 Worker，本地调试时可用环境变量覆盖。
+Worker 的 CORS 允许 `https://locke-world-battle-ai.pages.dev`、预览域名与 `http://localhost:*`。
 
 ## 说明
 

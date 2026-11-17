@@ -1,14 +1,16 @@
 {
   "name": "locke-world-battle-ai",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
     "typecheck": "tsc -b --noEmit",
-    "data:fetch": "python3 scripts/fetch-wiki.py"
+    "data:fetch": "python3 scripts/fetch-wiki.py",
+    "worker:deploy": "cd worker && npx wrangler deploy",
+    "deploy:web": "npm run build && npx wrangler pages deploy dist --project-name=locke-world-battle-ai --branch=main"
   },
   "dependencies": {
     "react": "18.3.1",

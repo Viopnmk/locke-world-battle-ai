@@ -1,154 +1,290 @@
-import { useMemo, useState } from 'react';
-import { aiConfig, analyzeBattle, analyzeLocally, buildPrompt, isAiConfigured, AiNotConfiguredError } from '../services/ai-client';
-import type { BattleAnalysis } from '../services/ai-client';
-import { skillGroups, skillsOf, spirits, spiritsById, sortByDex } from '../lib/spirits';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { spirits } from '../lib/spirits';
 import type { Spirit } from '../lib/types';
+import { teamMetrics } from '../lib/analysis';
+import { tint, typeColor } from '../lib/typeChart';
+import {
+  DEFAULT_MODEL,
+  FALLBACK_MODELS,
+  analyzeTeam,
+  aiEndpoint,
+  checkHealth,
+  loadModels,
+  type AiModel,
+  type AiResult,
+} from '../services/ai-client';
+import { AiAnswer } from './AiAnswer';
+import { SpiritPicker } from './SpiritPicker';
+import { TeamAnalysis } from './TeamAnalysis';
 
-const ordered = sortByDex(spirits);
+const DEMO_MINE = ['迪莫', '喵喵', '水蓝蓝'];
+const DEMO_ENEMY = ['火花', '雪影娃娃', '机械方方'];
+const MAX_TEAM = 6;
 
-function options() {
-  return ordered.map((s) => ({ id: s.id, label: `No.${s.dex} ${s.name}（${s.type.join('/')}）` }));
+const shortName = (name: string) => name.replace(/（[^）]*）/g, '');
+
+function byName(name: string): Spirit | null {
+  return spirits.find((s) => s.name === name) ?? null;
 }
 
 export function AiPanel() {
-  const [attackerId, setAttackerId] = useState(ordered[0]?.id ?? '');
-  const [defenderId, setDefenderId] = useState(ordered[1]?.id ?? ordered[0]?.id ?? '');
-  const [analysis, setAnalysis] = useState<BattleAnalysis | null>(null);
+  const [mine, setMine] = useState<Spirit[]>([]);
+  const [enemy, setEnemy] = useState<Spirit[]>([]);
+  const [picker, setPicker] = useState<null | 'mine' | 'enemy'>(null);
+
+  const [models, setModels] = useState<AiModel[]>(FALLBACK_MODELS);
+  const [model, setModel] = useState(DEFAULT_MODEL);
+  const [provider, setProvider] = useState('workers-ai');
+  const [online, setOnline] = useState<'checking' | 'ok' | 'down'>('checking');
+
+  const [result, setResult] = useState<AiResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [showPrompt, setShowPrompt] = useState(false);
 
-  const attacker = spiritsById.get(attackerId) as Spirit | undefined;
-  const defender = spiritsById.get(defenderId) as Spirit | undefined;
+  useEffect(() => {
+    let alive = true;
+    checkHealth()
+      .then((h) => {
+        if (!alive) return;
+        setOnline('ok');
+        setProvider(h.provider);
+      })
+      .catch(() => {
+        if (alive) setOnline('down');
+      });
+    loadModels().then((m) => {
+      if (!alive) return;
+      setModels(m.models);
+      setProvider(m.provider);
+      setModel((cur) => (m.models.some((x) => x.id === cur) ? cur : m.defaultModel));
+    });
+    return () => {
+      alive = false;
+    };
+  }, []);
 
-  const prompt = useMemo(() => {
-    if (!attacker || !defender) return '';
-    return buildPrompt({ attacker: { spirit: attacker, skills: skillsOf(attacker) }, defender: { spirit: defender, skills: skillsOf(defender) } });
-  }, [attacker, defender]);
+  const metrics = useMemo(() => (mine.length && enemy.length ? teamMetrics(mine, enemy) : null), [mine, enemy]);
+
+  const resetResult = () => {
+    setResult(null);
+    setError(null);
+  };
+
+  const addSpirit = useCallback(
+    (s: Spirit) => {
+      const side = picker;
+      if (!side) return;
+      const setter = side === 'mine' ? setMine : setEnemy;
+      setter((prev) => (prev.length >= MAX_TEAM || prev.some((x) => x.id === s.id) ? prev : [...prev, s]));
+      setPicker(null);
+      resetResult();
+    },
+    [picker],
+  );
+
+  const removeSpirit = (side: 'mine' | 'enemy', id: string) => {
+    const setter = side === 'mine' ? setMine : setEnemy;
+    setter((prev) => prev.filter((s) => s.id !== id));
+    resetResult();
+  };
+
+  const fillDemo = () => {
+    setMine(DEMO_MINE.map(byName).filter((s): s is Spirit => s !== null));
+    setEnemy(DEMO_ENEMY.map(byName).filter((s): s is Spirit => s !== null));
+    resetResult();
+  };
+
+  const clearAll = () => {
+    setMine([]);
+    setEnemy([]);
+    resetResult();
+  };
 
   async function run() {
-    if (!attacker || !defender) return;
+    if (!mine.length || !enemy.length) return;
     setBusy(true);
     setError(null);
-    const req = { attacker: { spirit: attacker, skills: skillsOf(attacker) }, defender: { spirit: defender, skills: skillsOf(defender) } };
     try {
-      const result = isAiConfigured ? await analyzeBattle(req) : analyzeLocally(req);
-      setAnalysis(result);
+      const res = await analyzeTeam(
+        mine.map((s) => s.id),
+        enemy.map((s) => s.id),
+        model,
+      );
+      setResult(res);
     } catch (e) {
-      if (e instanceof AiNotConfiguredError) {
-        setAnalysis(analyzeLocally(req));
-        setError('还没接模型端点，先给出本地速算结果。');
-      } else {
-        setError(e instanceof Error ? e.message : String(e));
-        setAnalysis(analyzeLocally(req));
-      }
+      setError(e instanceof Error ? e.message : String(e));
     } finally {
       setBusy(false);
     }
   }
 
-  const attackerGroups = attacker ? skillGroups(skillsOf(attacker)) : [];
+  const canRun = mine.length > 0 && enemy.length > 0 && !busy;
 
   return (
     <div className="ai">
       <section className="panel">
         <h2 className="panel__title">
-          AI 对战分析 <span className="panel__hint">Phase 2 入口</span>
+          双方阵容分析 <span className="panel__hint">Workers AI · 免费额度</span>
         </h2>
         <p className="ai__lead">
-          模型端点由 <code>VITE_AI_ENDPOINT</code> / <code>VITE_AI_MODEL</code> 注入，密钥放在 Cloudflare Worker 一侧，
-          仓库里没有任何 key。端点未配置时，下面的结论全部由图鉴数据本地算出（会明确标注“本地速算”）。
+          先选我方与敌方各 1–6 只精灵：页面用图鉴数据算出对位矩阵、共同弱点与速度差；再由模型写阵容互补、首发与换人。
+          模型只拿到服务器端核验过的数据，回答里的数字会再校验一遍。
         </p>
         <div className="ai__status">
-          <span className={isAiConfigured ? 'dot dot--on' : 'dot'} aria-hidden="true" />
-          {isAiConfigured ? `已配置端点：${aiConfig.endpoint}` : '未配置模型端点 · 使用本地速算'}
-          <span className="ai__model">模型：{aiConfig.model}</span>
+          <span className={online === 'ok' ? 'dot dot--on' : online === 'down' ? 'dot dot--off' : 'dot'} aria-hidden="true" />
+          {online === 'ok' ? 'Worker 在线' : online === 'down' ? 'Worker 暂时连不上 · 仅本地确定性格分析可用' : '正在检测 Worker…'}
+          <span className="ai__model">{provider === 'openai-compatible' ? '外部网关（Worker 侧配置）' : 'Cloudflare Workers AI（无需 API Key）'}</span>
+        </div>
+        <p className="source-line">端点：{aiEndpoint}</p>
+      </section>
+
+      <section className="panel">
+        <div className="team-head">
+          <h2 className="panel__title team-head__title">
+            阵容选择 <span className="panel__hint">{mine.length} vs {enemy.length}</span>
+          </h2>
+          <div className="team-head__actions">
+            <button type="button" className="link-button" onClick={fillDemo}>
+              填入示例
+            </button>
+            {mine.length || enemy.length ? (
+              <button type="button" className="link-button" onClick={clearAll}>
+                清空
+              </button>
+            ) : null}
+          </div>
         </div>
 
-        <div className="ai__pickers">
+        <TeamSlots
+          label="我方阵容"
+          accent="mine"
+          team={mine}
+          onAdd={() => setPicker('mine')}
+          onRemove={(id) => removeSpirit('mine', id)}
+        />
+        <TeamSlots
+          label="敌方阵容"
+          accent="enemy"
+          team={enemy}
+          onAdd={() => setPicker('enemy')}
+          onRemove={(id) => removeSpirit('enemy', id)}
+        />
+
+        {!mine.length || !enemy.length ? (
+          <p className="ai__hint">两边各至少选 1 只，下面的对位矩阵和 AI 按钮才会启用。</p>
+        ) : null}
+      </section>
+
+      {metrics ? <TeamAnalysis mine={mine} enemy={enemy} metrics={metrics} /> : null}
+
+      <section className="panel panel--ai">
+        <h2 className="panel__title">
+          AI 战术分析 <span className="panel__hint">服务器端核验 + 数字溯源</span>
+        </h2>
+        <div className="ai__pickers ai__pickers--row">
           <label>
-            <span>我方精灵</span>
-            <select value={attackerId} onChange={(e) => setAttackerId(e.target.value)}>
-              {options().map((o) => (
-                <option key={o.id} value={o.id}>
-                  {o.label}
+            <span>模型（可切换）</span>
+            <select value={model} onChange={(e) => setModel(e.target.value)} disabled={busy}>
+              {models.map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.label}
+                  {m.recommended ? ' · 推荐' : ''}
                 </option>
               ))}
             </select>
           </label>
-          <label>
-            <span>对手精灵</span>
-            <select value={defenderId} onChange={(e) => setDefenderId(e.target.value)}>
-              {options().map((o) => (
-                <option key={o.id} value={o.id}>
-                  {o.label}
-                </option>
-              ))}
-            </select>
-          </label>
         </div>
+        <p className="ai__hint">
+          {models.find((m) => m.id === model)?.note ?? '免费模型'} · 通常 3–10 秒
+        </p>
 
-        {attackerGroups.length ? (
-          <p className="ai__hint">
-            我方可用技能 {attackerGroups.reduce((n, g) => n + g.skills.length, 0)} 个（来自图鉴学习面）
-          </p>
+        <button type="button" className="primary-button" onClick={run} disabled={!canRun}>
+          {busy ? '模型分析中…' : result ? '重新生成分析' : '生成 AI 战术分析'}
+        </button>
+
+        <details className="request-preview">
+          <summary>查看将发送给 Worker 的数据</summary>
+          <pre>
+            {JSON.stringify(
+              {
+                mode: 'team',
+                model,
+                myTeam: mine.map((s) => s.name),
+                enemyTeam: enemy.map((s) => s.name),
+                note: '只传精灵名称/ID；种族值、技能与倍率由 Worker 从图鉴数据重新解析',
+              },
+              null,
+              2,
+            )}
+          </pre>
+        </details>
+
+        {error ? (
+          <div className="ai__error">
+            <strong>{error}</strong>
+            <p>本地确定性分析仍然有效；也可以换一个模型或稍后重试。</p>
+          </div>
         ) : null}
 
-        <button type="button" className="primary-button" onClick={run} disabled={busy || !attacker || !defender}>
-          {busy ? '分析中…' : '生成对战分析'}
-        </button>
-        <button type="button" className="ghost-button" onClick={() => setShowPrompt((v) => !v)}>
-          {showPrompt ? '收起将要发送的提示词' : '查看将要发送的提示词'}
-        </button>
-        {showPrompt ? <pre className="prompt-preview">{prompt || '选好双方精灵后显示'}</pre> : null}
-        {error ? <p className="ai__error">{error}</p> : null}
+        {result ? <AiAnswer result={result} /> : null}
       </section>
 
-      {analysis ? (
-        <section className="panel">
-          <h2 className="panel__title">
-            分析结果 <span className="panel__hint">{analysis.origin === 'model' ? '模型输出' : '本地速算（未接模型）'}</span>
-          </h2>
-          <p className="ai__headline">{analysis.headline}</p>
-          {analysis.matchup.length ? (
-            <ul className="ai__list">
-              {analysis.matchup.map((m) => (
-                <li key={m}>{m}</li>
-              ))}
-            </ul>
-          ) : null}
-          {analysis.skillNotes.length ? (
-            <>
-              <h3 className="ai__subhead">推荐技能</h3>
-              <ul className="ai__list">
-                {analysis.skillNotes.map((m) => (
-                  <li key={m}>{m}</li>
-                ))}
-              </ul>
-            </>
-          ) : null}
-          {analysis.cautions.length ? (
-            <>
-              <h3 className="ai__subhead">风险提示</h3>
-              <ul className="ai__list">
-                {analysis.cautions.map((m) => (
-                  <li key={m}>{m}</li>
-                ))}
-              </ul>
-            </>
-          ) : null}
-        </section>
-      ) : null}
+      <SpiritPicker
+        open={picker !== null}
+        title={picker === 'mine' ? '选择我方精灵' : '选择敌方精灵'}
+        excludeIds={(picker === 'mine' ? mine : enemy).map((s) => s.id)}
+        onPick={addSpirit}
+        onClose={() => setPicker(null)}
+      />
+    </div>
+  );
+}
 
-      <section className="panel panel--quiet">
-        <h2 className="panel__title">Phase 2 接口约定</h2>
-        <pre className="prompt-preview">
-{`POST \${VITE_AI_ENDPOINT}/analyze
-{ "model": "\${VITE_AI_MODEL}", "prompt": "<buildPrompt() 结果>" }
-→ { "headline": string, "matchup": string[], "skillNotes": string[], "cautions": string[] }`}
-        </pre>
-        <p className="source-line">实现文件：src/services/ai-client.ts（含 prompt 构造与本地兜底分析）</p>
-      </section>
+function TeamSlots({
+  label,
+  accent,
+  team,
+  onAdd,
+  onRemove,
+}: {
+  label: string;
+  accent: 'mine' | 'enemy';
+  team: Spirit[];
+  onAdd: () => void;
+  onRemove: (id: string) => void;
+}) {
+  return (
+    <div className={`team-block team-block--${accent}`}>
+      <h3 className="team-block__label">
+        {label} <span>{team.length}/{MAX_TEAM}</span>
+      </h3>
+      <ul className="team-slots">
+        {team.map((s) => (
+          <li key={s.id} className="team-chip">
+            <span className="team-chip__main">
+              <strong>{shortName(s.name)}</strong>
+              <small>
+                {s.type.map((t) => (
+                  <span key={t} className="type-chip type-chip--xs" style={{ background: tint(typeColor(t), 0.16), color: typeColor(t) }}>
+                    {t}
+                  </span>
+                ))}
+                <span className="team-chip__total">总{s.stats.total ?? '—'}</span>
+              </small>
+            </span>
+            <button type="button" className="team-chip__remove" onClick={() => onRemove(s.id)} aria-label={`移除 ${s.name}`}>
+              ✕
+            </button>
+          </li>
+        ))}
+        {team.length < MAX_TEAM ? (
+          <li className="team-add-wrap">
+            <button type="button" className="team-add" onClick={onAdd}>
+              + 选择精灵
+            </button>
+          </li>
+        ) : null}
+      </ul>
     </div>
   );
 }
