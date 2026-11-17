@@ -51,6 +51,26 @@ function byPower(a: ResolvedSkill, b: ResolvedSkill): number {
   return (b.power ?? 0) - (a.power ?? 0) || (a.energy ?? 99) - (b.energy ?? 99);
 }
 
+/** 同一队里基准名重复时（例如不同形态），保留形态后缀，仍重名再补编号 */
+function displayLabels(list: Spirit[]): Map<string, string> {
+  const base = new Map<string, string>();
+  for (const s of list) base.set(s.id, shortName(s.name));
+  const counts = new Map<string, number>();
+  for (const n of base.values()) counts.set(n, (counts.get(n) ?? 0) + 1);
+  const map = new Map<string, string>();
+  for (const s of list) {
+    const short = base.get(s.id)!;
+    if ((counts.get(short) ?? 0) <= 1) {
+      map.set(s.id, short);
+    } else if (s.name !== short) {
+      map.set(s.id, s.name);
+    } else {
+      map.set(s.id, `${short} No.${s.dex}`);
+    }
+  }
+  return map;
+}
+
 /** 技能简写：名称（属性·类别·威力·能耗）；变化技能不带威力 */
 function skillTag(sk: ResolvedSkill): string {
   const bits = [sk.type, sk.category];
@@ -276,13 +296,17 @@ export function teamBrief(mine: Spirit[], theirs: Spirit[], precomputed?: TeamMe
   const metrics = precomputed ?? teamMetrics(mine, theirs);
   const mineById = new Map(mine.map((s) => [s.id, s]));
   const theirsById = new Map(theirs.map((s) => [s.id, s]));
+  const myLabel = displayLabels(mine);
+  const enemyLabel = displayLabels(theirs);
+  const labelOfMine = (spirit: Spirit) => myLabel.get(spirit.id) ?? shortName(spirit.name);
+  const labelOfEnemy = (spirit: Spirit) => enemyLabel.get(spirit.id) ?? shortName(spirit.name);
 
   /* -------------------------------------------------- 逐只敌方：最佳答案 */
   const answers: TeamBrief['answers'] = theirs.map((en, j) => {
     const cells = mine.map((m, i) => {
       const cell = metrics.matrix[i][j];
       return {
-        name: m.name,
+        name: labelOfMine(m),
         id: m.id,
         multiplier: cell.attack.multiplier,
         threat: cell.threat.multiplier,
@@ -298,7 +322,7 @@ export function teamBrief(mine: Spirit[], theirs: Spirit[], precomputed?: TeamMe
     const altRaw = sorted[1];
     return {
       enemyId: en.id,
-      enemyName: en.name,
+      enemyName: labelOfEnemy(en),
       enemyTypes: en.type,
       best,
       alternative:
@@ -319,24 +343,26 @@ export function teamBrief(mine: Spirit[], theirs: Spirit[], precomputed?: TeamMe
   const leadLines: string[] = [];
   if (lead && leadRow) {
     leadLines.push(
-      `首选 ${shortName(lead.name)}：对敌平均进攻 ${fmt(leadRow.attack)}、平均受威胁 ${fmt(leadRow.threat)}、速度平均差 ${sign(leadRow.speedEdge)}，对位综合分 ${leadRow.score}（我方最高）。`,
+      `首选 ${labelOfMine(lead)}：对敌平均进攻 ${fmt(leadRow.attack)}、平均受威胁 ${fmt(leadRow.threat)}、速度平均差 ${sign(leadRow.speedEdge)}，对位综合分 ${leadRow.score}（我方最高）。`,
     );
     const leadSpe = lead.stats.spe ?? 0;
     const enemyFastest = metrics.speed.enemyFastest;
+    const fastestSpirit = enemyFastest ? theirs.reduce((x, y) => ((y.stats.spe ?? 0) > (x.stats.spe ?? 0) ? y : x)) : null;
+    const enemyLabelFastest = fastestSpirit ? labelOfEnemy(fastestSpirit) : '';
     if (enemyFastest) {
       const faster = theirs.filter((e) => (e.stats.spe ?? 0) < leadSpe).length;
       leadLines.push(
-        `速度 ${leadSpe}，快过敌方 ${faster}/${theirs.length} 只${enemyFastest ? `（对方最快 ${shortName(enemyFastest.name)} ${enemyFastest.spe}）` : ''}。`,
+        `速度 ${leadSpe}，快过敌方 ${faster}/${theirs.length} 只${enemyFastest ? `（对方最快 ${enemyLabelFastest} ${enemyFastest.spe}）` : ''}。`,
       );
     }
     // 最佳开场目标 / 最忌讳的对象
     const targets = answers
-      .filter((a) => a.best.name === lead.name)
+      .filter((a) => a.best.id === lead.id)
       .sort((a, b) => b.best.multiplier - a.best.multiplier);
     const goodTarget = targets.find((t) => t.best.multiplier >= 2);
     if (goodTarget) {
       leadLines.push(
-        `最想遇到 ${shortName(goodTarget.enemyName)}（${goodTarget.enemyTypes.join('/')}）：${goodTarget.best.skill ? `${goodTarget.best.skill.name} 威力${goodTarget.best.skill.power}` : `${goodTarget.best.skillType}系输出`} 打 ${fmt(goodTarget.best.multiplier)}。`,
+        `最想遇到 ${goodTarget.enemyName}［${goodTarget.enemyTypes.join('/')}］：${goodTarget.best.skill ? `${goodTarget.best.skill.name} 威力${goodTarget.best.skill.power}` : `${goodTarget.best.skillType}系输出`} 打 ${fmt(goodTarget.best.multiplier)}。`,
       );
     }
     const leadIdx = mine.findIndex((m) => m.id === lead.id);
@@ -347,12 +373,12 @@ export function teamBrief(mine: Spirit[], theirs: Spirit[], precomputed?: TeamMe
       : null;
     if (worstThreat && worstThreat.cell.threat.multiplier >= 2) {
       leadLines.push(
-        `风险：遇到 ${shortName(worstThreat.e.name)} 会被 ${worstThreat.cell.threat.skill ? `「${worstThreat.cell.threat.skill.name}」` : ''}${fmt(worstThreat.cell.threat.multiplier)} 反打，别让它先手。`,
+        `风险：遇到 ${labelOfEnemy(worstThreat.e)} 会被 ${worstThreat.cell.threat.skill ? `「${worstThreat.cell.threat.skill.name}」` : ''}${fmt(worstThreat.cell.threat.multiplier)} 反打，别让它先手。`,
       );
     }
     if (altLead && altLeadRow) {
       leadLines.push(
-        `备选 ${shortName(altLead.name)}（进攻 ${fmt(altLeadRow.attack)} / 受威胁 ${fmt(altLeadRow.threat)}），想先稳一手时换它上场。`,
+        `备选 ${labelOfMine(altLead)}（进攻 ${fmt(altLeadRow.attack)} / 受威胁 ${fmt(altLeadRow.threat)}），想先稳一手时换它上场。`,
       );
     }
   } else {
@@ -370,24 +396,24 @@ export function teamBrief(mine: Spirit[], theirs: Spirit[], precomputed?: TeamMe
       const spd =
         best.speedEdge > 0 ? `我方快 ${best.speedEdge}` : best.speedEdge < 0 ? `我方慢 ${-best.speedEdge}` : '同速';
       const parts = [
-        `挡 ${shortName(a.enemyName)}（${types}）：上 ${shortName(best.name)}，${
+        `挡 ${a.enemyName}［${types}］：上 ${best.name}，${
           best.skill ? `${best.skill.name}（${best.skill.type}·威力${best.skill.power}）` : `${best.skillType}系输出`
         } 打 ${fmt(best.multiplier)}，${spd}。`,
       ];
       if (best.threat >= 2) {
-        parts.push(`注意：它也吃 ${shortName(a.enemyName)} 的克制（${fmt(best.threat)}），别站着挨。`);
+        parts.push(`注意：它也吃 ${a.enemyName} 的克制（${fmt(best.threat)}），别站着挨。`);
       } else if (best.threat <= 0.5) {
         parts.push(`对方反打只有 ${fmt(best.threat)}，可以顶着打。`);
       } else {
         parts.push(`对方反打 ${fmt(best.threat)}，属正常互换。`);
       }
-      if (a.alternative && a.alternative.multiplier >= 2) {
-        parts.push(`备选 ${shortName(a.alternative.name)}（${fmt(a.alternative.multiplier)}，受 ${fmt(a.alternative.threat)}）。`);
+      if (a.alternative && a.alternative.multiplier >= 2 && a.alternative.threat <= 1) {
+        parts.push(`备选 ${a.alternative.name}（${fmt(a.alternative.multiplier)}，受 ${fmt(a.alternative.threat)}）。`);
       }
       answerLines.push(parts.join(''));
     } else if (best) {
       answerLines.push(
-        `挡 ${shortName(a.enemyName)}（${types}）：没有 ${fmt(2)} 答案，我方最高只有 ${fmt(best.multiplier)}（${shortName(best.name)}）${
+        `挡 ${a.enemyName}［${types}］：没有 ${fmt(2)} 答案，我方最高只有 ${fmt(best.multiplier)}（${best.name}）${
           best.speedEdge > 0 ? '，可凭速度先手换血' : ''
         }。建议避战或用变化技能消耗。`,
       );
@@ -398,11 +424,15 @@ export function teamBrief(mine: Spirit[], theirs: Spirit[], precomputed?: TeamMe
   const guardLines: string[] = [];
   if (metrics.sharedWeak.length) {
     for (const w of metrics.sharedWeak.slice(0, 3)) {
-      const enemyCarriers = theirs.filter((e) => e.type.includes(w.type)).map((e) => shortName(e.name));
+      const carriers = theirs.filter((e) => e.type.includes(w.type));
+      const enemyCarriers = [...new Set(carriers.map((e) => labelOfEnemy(e)))];
+      const hitMembers = mine.filter((m) => matchup(w.type, m.type).multiplier >= 2);
+      const members = [...new Set(hitMembers.map((m) => labelOfMine(m)))];
+      const verdict = enemyCarriers.length
+        ? `对方 ${enemyCarriers.slice(0, 3).join('、')} 正好带${w.type}系，换人要挑不吃这个的`
+        : `对方目前没有${w.type}系，暂时安全`;
       guardLines.push(
-        `${w.type}系能同时克制我方 ${w.count} 只（${w.members.map(shortName).join('、')}）${
-          enemyCarriers.length ? `，而对方 ${enemyCarriers.slice(0, 3).join('、')} 正好带${w.type}系` : `，对方目前没有${w.type}系`
-        }（最高 ${fmt(w.maxMultiplier)}）。`,
+        `${w.type}系一招能克制我方 ${members.length} 只（${members.join('、')}，最高 ${fmt(w.maxMultiplier)}）；${verdict}。`,
       );
     }
   } else {
@@ -414,7 +444,7 @@ export function teamBrief(mine: Spirit[], theirs: Spirit[], precomputed?: TeamMe
     guardLines.push(
       `盲区：${gaps
         .slice(0, 4)
-        .map((g) => `${shortName(g.enemyName)}（${g.enemyTypes.join('/')}，我方最高 ${fmt(g.best?.multiplier ?? 0)}）`)
+        .map((g) => `${g.enemyName}［${g.enemyTypes.join('/')}］我方最高 ${fmt(g.best?.multiplier ?? 0)}`)
         .join('、')}，这些目标只能靠平伤或变化技能处理。`,
     );
     const gapTypes = [...new Set(gaps.flatMap((g) => g.enemyTypes))];
@@ -424,11 +454,13 @@ export function teamBrief(mine: Spirit[], theirs: Spirit[], precomputed?: TeamMe
   }
 
   if (metrics.speed.enemyFastest && metrics.speed.myFastest) {
-    const fasterCount = theirs.filter((e) => (e.stats.spe ?? 0) > (mine.reduce((x, y) => ((y.stats.spe ?? 0) > (x.stats.spe ?? 0) ? y : x)).stats.spe ?? 0)).length;
+    const mineTop = mine.reduce((x, y) => ((y.stats.spe ?? 0) > (x.stats.spe ?? 0) ? y : x));
+    const enemyTop = theirs.reduce((x, y) => ((y.stats.spe ?? 0) > (x.stats.spe ?? 0) ? y : x));
+    const laneFastestMine = labelOfMine(mineTop);
+    const laneFastestEnemy = labelOfEnemy(enemyTop);
+    const fasterCount = theirs.filter((e) => (e.stats.spe ?? 0) > (mineTop.stats.spe ?? 0)).length;
     guardLines.push(
-      `速度：我方最快 ${shortName(metrics.speed.myFastest.name)} ${metrics.speed.myFastest.spe}，对方最快 ${shortName(
-        metrics.speed.enemyFastest.name,
-      )} ${metrics.speed.enemyFastest.spe}${fasterCount ? `；对方有 ${fasterCount} 只快过我方最快的那只` : '；我方最快的那只比对方全员都快'}。`,
+      `速度：我方最快 ${laneFastestMine} ${metrics.speed.myFastest.spe}，对方最快 ${laneFastestEnemy} ${metrics.speed.enemyFastest.spe}${fasterCount ? `；对方有 ${fasterCount} 只快过我方最快的那只` : '；我方最快的那只比对方全员都快'}。`,
     );
   }
 
@@ -448,7 +480,7 @@ export function teamBrief(mine: Spirit[], theirs: Spirit[], precomputed?: TeamMe
 
   const headline = (() => {
     const bits = [`我方 ${mine.length} 只 vs 对方 ${theirs.length} 只`];
-    if (lead) bits.push(`首发 ${shortName(lead.name)}`);
+    if (lead) bits.push(`首发 ${labelOfMine(lead)}`);
     const good = answers.filter((a) => a.hasAnswer).length;
     bits.push(`${good}/${theirs.length} 只敌方有 ≥2 倍答案`);
     if (gaps.length) bits.push(`${gaps.length} 只存在盲区`);
