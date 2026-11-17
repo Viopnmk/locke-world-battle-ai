@@ -464,7 +464,7 @@ export function buildGuide(spirit: Spirit, preset: PresetKey = 'burst'): BuildGu
   };
   const summary: string[] = [
     `种族值：${(['hp', 'atk', 'def', 'spa', 'spd', 'spe'] as StatKey[]).map(statText).filter(Boolean).join('，')}；总 ${m.total.value}。`,
-    `${mainLabel} ${spirit.stats[mainKey] ?? '—'} 高于${dumpLabel} ${spirit.stats[dumpKey] ?? '—'}，所以走${mainCat}输出；${
+    `${atk === spa ? `物攻与魔攻持平（各 ${atk}），先按${mainCat}输出配` : `${mainLabel} ${spirit.stats[mainKey] ?? '—'} 高于${dumpLabel} ${spirit.stats[dumpKey] ?? '—'}，所以走${mainCat}输出`}；${
       wall ? `耐久三项均值超过 ${Math.round(bulkPct)}% 的形态，适合${preset === 'bulk' ? '拖回合的消耗流' : '站场换血的打法'}` : `速度超过 ${Math.round(spePct)}% 的形态，${spePct >= 60 ? '可以抢节奏' : '需要先手道具/队友提速'}`
     }。`,
     `四个技能的顺序是「${slots.slice(0, 4).map((slot) => slot.slot).join(' → ')}」，每招都出自它自己的学习面（等级/技能石/血脉），没有跨精灵预置。`,
