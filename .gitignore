@@ -1,0 +1,25 @@
+# 依赖与构建产物
+node_modules/
+dist/
+dist-ssr/
+
+# 环境变量（任何密钥都不进仓库）
+.env
+.env.*
+!.env.example
+*.local
+
+# 数据抓取缓存与临时文件
+.cache/
+.work/
+
+# 构建/编译临时产物
+*.tsbuildinfo
+__pycache__/
+*.pyc
+
+# 编辑器 / 系统
+.DS_Store
+.vscode/
+.idea/
+*.log
