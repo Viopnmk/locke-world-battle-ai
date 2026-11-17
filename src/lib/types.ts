@@ -30,6 +30,8 @@ export interface Spirit {
   trait: Trait | null;
   stage: number | null;
   form: string;
+  /** 形态名称，如「首领形态」「蓬松的样子」 */
+  formLabel: string;
   season: string | null;
   eggGroups: string[];
   height: Measure | null;

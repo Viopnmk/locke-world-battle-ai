@@ -207,7 +207,7 @@ export function SpiritDetail({ spirit, onClose, onOpenType }: Props) {
             </div>
             <div>
               <dt>形态</dt>
-              <dd>{spirit.form === 'main' ? '普通形态' : spirit.form || '—'}</dd>
+              <dd>{spirit.formLabel || (spirit.form === 'main' ? '普通形态' : spirit.form || '—')}</dd>
             </div>
           </dl>
           <p className="source-line">

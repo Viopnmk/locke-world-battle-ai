@@ -117,7 +117,7 @@ def module_source(title: str, *, offline: bool) -> str:
 
 # --------------------------------------------------------------- roster (HTML)
 class _Cell:
-    __slots__ = ("column", "text", "imgs", "links", "aria", "tag")
+    __slots__ = ("column", "text", "imgs", "links", "aria", "tag", "form_label")
 
     def __init__(self, tag: str, column: str = ""):
         self.tag = tag
@@ -126,6 +126,7 @@ class _Cell:
         self.imgs: list[str] = []
         self.links: list[tuple[str, str]] = []
         self.aria = ""
+        self.form_label = ""   # the 形态 note inside the name cell
 
     @property
     def plain(self) -> str:
@@ -142,9 +143,13 @@ class RosterParser(HTMLParser):
         self._cells: list[_Cell] = []
         self._cell: _Cell | None = None
         self._attrs: dict | None = None
+        self._in_form_label = False
 
     def handle_starttag(self, tag, attrs):
         a = dict(attrs)
+        if tag == "div" and "npc-table-form" in a.get("class", ""):
+            self._in_form_label = True
+            return
         if tag == "tr":
             self._cells = []
             self._attrs = a
@@ -163,6 +168,9 @@ class RosterParser(HTMLParser):
                 self._cell.aria = aria
 
     def handle_endtag(self, tag):
+        if tag == "div" and self._in_form_label:
+            self._in_form_label = False
+            return
         if tag in ("td", "th"):
             self._cell = None
         elif tag == "tr" and self._attrs is not None:
@@ -175,8 +183,12 @@ class RosterParser(HTMLParser):
             self._cell = None
 
     def handle_data(self, data):
-        if self._cell is not None:
-            self._cell.text.append(data)
+        if self._cell is None:
+            return
+        if self._in_form_label:
+            self._cell.form_label += data
+            return
+        self._cell.text.append(data)
 
 
 def parse_roster(html: str) -> tuple[list[dict], list[str], int | None]:
@@ -343,11 +355,18 @@ def main() -> None:
     missing_skills = []
     for row in rows:
         cells = row["_cells"]
-        name = cells["name"].plain if "name" in cells else ""
+        name_cell = cells.get("name")
+        # the name cell holds the linked name plus a 形态 note (首领形态 / 蓬松的样子 …)
+        name = name_cell.links[0][1] if name_cell and name_cell.links and name_cell.links[0][1] else ""
+        if not name and name_cell:
+            name = name_cell.plain.split(" ")[0]
+        form_label = name_cell.form_label.strip() if name_cell else ""
+        wiki_name = row.get("data-search", "").split(" ", 1)[-1]
+        if wiki_name and name != wiki_name:
+            raise SystemExit(f"name mismatch for {row.get('data-id')}: {name!r} vs wiki {wiki_name!r}")
         types = [t.strip().removesuffix("系")
                  for t in (cells["types"].aria if "types" in cells else "").split("/") if t.strip()]
         avatar = cells["avatar"].imgs[0] if "avatar" in cells and cells["avatar"].imgs else ""
-        name_cell = cells.get("name")
         page_title = clean_name(name_cell.links[0][0]) if name_cell and name_cell.links else name
         page_title = page_title or name
 
@@ -395,6 +414,7 @@ def main() -> None:
             "trait": {"name": trait_name, "effect": trait_effect} if (trait_name or trait_effect) else None,
             "stage": to_int(row.get("data-stage", "")),
             "form": row.get("data-form") or "",
+            "formLabel": form_label,
             "season": season,
             "eggGroups": egg_groups,
             "height": parse_range(cells["height"].plain if "height" in cells else "", "M"),

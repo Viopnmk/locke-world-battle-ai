@@ -288,6 +288,14 @@ a {
   letter-spacing: 0.03em;
 }
 
+.spirit-card__form {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 6px;
+  background: #e9eef0;
+  color: #566a72;
+}
+
 .spirit-card__season {
   font-size: 10px;
   padding: 1px 6px;
@@ -327,6 +335,17 @@ a {
 .spirit-card__total small {
   font-size: 10px;
   color: var(--muted);
+}
+
+.load-more {
+  width: 100%;
+  min-height: 46px;
+  margin-top: 4px;
+  border: 1px dashed #d4cbb6;
+  border-radius: var(--radius-md);
+  background: #fbf7ec;
+  color: var(--accent-deep);
+  font-size: 13.5px;
 }
 
 .empty-state,
@@ -809,6 +828,8 @@ a {
 }
 
 .ai__model {
+  display: block;
+  width: 100%;
   color: var(--muted);
 }
 

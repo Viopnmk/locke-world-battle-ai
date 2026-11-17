@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { SpiritList } from './components/SpiritList';
 import { SpiritDetail } from './components/SpiritDetail';
 import { TypeCalculator } from './components/TypeCalculator';
@@ -41,14 +41,55 @@ const TABS: { key: Tab; label: string; icon: JSX.Element }[] = [
   },
 ];
 
+/**
+ * Hash routes so any view can be opened directly and shared on a phone:
+ * #/ (图鉴) · #/chart (克制) · #/ai (AI) · #/spirit/<id> (图鉴详情)
+ */
+function readHash(): { tab: Tab; spiritId: string | null } {
+  const raw = window.location.hash.replace(/^#\/?/, '');
+  if (raw.startsWith('spirit/')) return { tab: 'dex', spiritId: raw.slice('spirit/'.length) };
+  if (raw === 'chart') return { tab: 'chart', spiritId: null };
+  if (raw === 'ai') return { tab: 'ai', spiritId: null };
+  return { tab: 'dex', spiritId: null };
+}
+
 export default function App() {
-  const [tab, setTab] = useState<Tab>('dex');
+  const initial = readHash();
+  const [tab, setTab] = useState<Tab>(initial.tab);
   const [query, setQuery] = useState('');
   const [typeFilter, setTypeFilter] = useState<string | null>(null);
-  const [selected, setSelected] = useState<Spirit | null>(null);
+  const [selected, setSelected] = useState<Spirit | null>(
+    initial.spiritId ? spirits.find((s) => s.id === initial.spiritId) ?? null : null,
+  );
 
   const counts = useMemo(() => typeCounts(), []);
   const filtered = useMemo(() => sortByDex(searchSpirits(query, typeFilter)), [query, typeFilter]);
+
+  useEffect(() => {
+    const onHash = () => {
+      const r = readHash();
+      setTab(r.tab);
+      setSelected(r.spiritId ? spirits.find((s) => s.id === r.spiritId) ?? null : null);
+      window.scrollTo({ top: 0 });
+    };
+    window.addEventListener('hashchange', onHash);
+    return () => window.removeEventListener('hashchange', onHash);
+  }, []);
+
+  const go = useCallback((hash: string) => {
+    if (window.location.hash === hash) return;
+    window.location.hash = hash;
+  }, []);
+
+  const openSpirit = useCallback((spirit: Spirit) => {
+    setSelected(spirit);
+    go(`#/spirit/${spirit.id}`);
+  }, [go]);
+
+  const closeSpirit = useCallback(() => {
+    setSelected(null);
+    go('#/');
+  }, [go]);
 
   useEffect(() => {
     window.scrollTo({ top: 0 });
@@ -64,6 +105,14 @@ export default function App() {
     setTab('dex');
     setTypeFilter(type);
     setQuery('');
+    go('#/');
+  }
+
+  function changeTab(next: Tab) {
+    const hash = next === 'chart' ? '#/chart' : next === 'ai' ? '#/ai' : '#/';
+    if (next === 'dex') setSelected(null);
+    setTab(next);
+    go(hash);
   }
 
   return (
@@ -72,7 +121,7 @@ export default function App() {
         <div>
           <h1>洛克对战助手</h1>
           <p>
-            《洛克王国：世界》· {meta.spiritCount} 只精灵 · 数据 {meta.fetchedAt.slice(0, 10)} 抓取
+            {meta.spiritCount} 只精灵 · 数据 {meta.fetchedAt.slice(5, 10)} 抓取
           </p>
         </div>
         <span className="app__badge">数据来自 BWIKI</span>
@@ -134,7 +183,7 @@ export default function App() {
               {filtered.length !== spirits.length ? ` / 全图鉴 ${spirits.length} 只` : ''}
             </p>
 
-            <SpiritList spirits={filtered} onOpen={setSelected} emptyHint="没有匹配的精灵，换个名字或取消属性筛选试试" />
+            <SpiritList spirits={filtered} onOpen={openSpirit} emptyHint="没有匹配的精灵，换个名字或取消属性筛选试试" />
 
             <section className="panel panel--quiet data-note">
               <h2 className="panel__title">数据说明</h2>
@@ -171,7 +220,7 @@ export default function App() {
             key={t.key}
             type="button"
             className={`tabbar__item${tab === t.key ? ' is-active' : ''}`}
-            onClick={() => setTab(t.key)}
+            onClick={() => changeTab(t.key)}
             aria-current={tab === t.key ? 'page' : undefined}
           >
             {t.icon}
@@ -180,7 +229,7 @@ export default function App() {
         ))}
       </nav>
 
-      {selected ? <SpiritDetail spirit={selected} onClose={() => setSelected(null)} onOpenType={openType} /> : null}
+      {selected ? <SpiritDetail spirit={selected} onClose={closeSpirit} onOpenType={openType} /> : null}
     </div>
   );
 }
