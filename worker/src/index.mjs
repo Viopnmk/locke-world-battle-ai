@@ -166,11 +166,16 @@ async function handleAnalyze(request, env, origin) {
     const theirs = resolveTeam(body.enemyTeam, 'enemyTeam');
     if (theirs.error) return json({ ok: false, error: theirs.error }, { status: 400, origin });
     ctx = { myTeam: mine.list, enemyTeam: theirs.list };
-    ctxNames = { mine: mine.list.map((s) => s.name), enemy: theirs.list.map((s) => s.name) };
+    const teamM = teamMetrics(mine.list, theirs.list);
+    ctxNames = {
+      mine: mine.list.map((s) => s.name),
+      enemy: theirs.list.map((s) => s.name),
+      matrix: teamM.matrix,
+    };
     deterministic = {
       mine: mine.list.map(spiritLine),
       enemy: theirs.list.map(spiritLine),
-      team: teamMetrics(mine.list, theirs.list),
+      team: teamM,
       ...(mine.list.length === 1 && theirs.list.length === 1 ? { duel: duelMetrics(mine.list[0], theirs.list[0]) } : {}),
     };
   }
@@ -212,6 +217,12 @@ async function handleAnalyze(request, env, origin) {
       check.typeIssues.length ? `不存在的属性：${check.typeIssues.join('、')}` : '',
       check.unknownTerms?.length ? `事实中没有的${check.unknownTerms.map((t) => `${t.kind}「${t.term}」`).join('、')}` : '',
       check.outOfTeam?.length ? `不在我方阵容里的精灵：${check.outOfTeam.join('、')}` : '',
+      check.switchIssues?.length
+        ? `与对位表矛盾的换人：${check.switchIssues
+            .slice(0, 4)
+            .map((x) => `对${x.enemy}换上${x.member}（进攻${x.attack}倍、受威胁${x.threat}倍）`)
+            .join('；')}`
+        : '',
     ]
       .filter(Boolean)
       .join('；');

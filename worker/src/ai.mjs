@@ -4,19 +4,19 @@
  */
 export const MODELS = [
   {
-    id: '@cf/openai/gpt-oss-20b',
-    label: 'GPT-OSS 20B',
-    note: '响应快、中文稳，默认',
+    id: '@cf/zai-org/glm-4.7-flash',
+    label: 'GLM 4.7 Flash',
+    note: '中文严谨、最贴数据，默认',
     recommended: true,
-    params: { reasoning_effort: 'low' },
+    params: { chat_template_kwargs: { enable_thinking: false } },
     maxTokens: 900,
   },
   {
-    id: '@cf/zai-org/glm-4.7-flash',
-    label: 'GLM 4.7 Flash',
-    note: '中文表达好，速度快',
+    id: '@cf/openai/gpt-oss-20b',
+    label: 'GPT-OSS 20B',
+    note: '响应快、更活泼，备选',
     recommended: true,
-    params: { chat_template_kwargs: { enable_thinking: false } },
+    params: { reasoning_effort: 'low' },
     maxTokens: 900,
   },
   {

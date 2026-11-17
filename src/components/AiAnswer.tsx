@@ -6,6 +6,9 @@ export function VerificationBadge({ verification }: { verification: AiVerificati
     ...(verification.typeIssues ?? []).map((t) => `属性「${t}系」`),
     ...(verification.unknownTerms ?? []).map((t) => `${t.kind}「${t.term}」`),
     ...(verification.outOfTeam ?? []).map((n) => `阵容外精灵「${n}」`),
+    ...(verification.switchIssues ?? []).map(
+      (x) => `对「${x.enemy}」换上「${x.member}」与对位表矛盾（攻 ×${x.attack} / 受 ×${x.threat}）`,
+    ),
   ];
 
   if (verification.grounded) {

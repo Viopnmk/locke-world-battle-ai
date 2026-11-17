@@ -122,6 +122,36 @@ export function buildFacts(mode, ctx) {
   const metrics = teamMetrics(mine, theirs);
 
   const lines = [header, `任务：分析双方阵容（我方${mine.length}只，敌方${theirs.length}只），给出阵容互补、首发与换人策略。`];
+
+  // 把确定性结论放在最前面：模型最容易读到，也最容易照抄正确数字
+  const firstAnswers = theirs.map((en) => {
+    const ranked = mine
+      .map((m) => {
+        const atk = bestHit(m, en.type);
+        const thr = bestHit(en, m.type);
+        return { name: m.name, atk: atk.multiplier, thr: thr.multiplier };
+      })
+      .sort((a, b) => b.atk - a.atk || a.thr - b.thr);
+    const top = ranked[0];
+    return `${en.name}→${top ? `${top.name}（攻${multiplierText(top.atk)}/受${multiplierText(top.thr)}）` : '无'}`;
+  });
+  const summary = [
+    '【确定性结论（服务器端计算，可直接引用）】',
+    metrics.lead
+      ? `首发打分最高：${metrics.lead.name}（对敌平均进攻${metrics.lead.attack}、平均受威胁${metrics.lead.threat}、速度平均差${metrics.lead.speedEdge > 0 ? '+' : ''}${metrics.lead.speedEdge}）`
+      : '',
+    firstAnswers.length ? `每只敌方的最佳答案：${firstAnswers.join('；')}` : '',
+    metrics.sharedWeak.length
+      ? `我方共同弱点：${metrics.sharedWeak.map((w) => `${w.type}系技能可克制我方${w.members.join('、')}`).join('；')}`
+      : '我方共同弱点：无（没有属性可同时克制我方2只以上）',
+    metrics.coverageGaps.length
+      ? `打击盲区：${metrics.coverageGaps.map((g) => `${g.enemy}（我方最高${multiplierText(g.bestMultiplier)}）`).join('；')}`
+      : '打击盲区：无',
+    `平均种族值：我方${metrics.totals.myAvg}，敌方${metrics.totals.enemyAvg}（${metrics.totals.diff > 0 ? '+' : ''}${metrics.totals.diff}）`,
+  ]
+    .filter(Boolean)
+    .join('\n');
+  lines.push(summary);
   if (mine.length) lines.push(teamBlock('我方阵容', mine));
   if (mine.length && theirs.length) {
     lines.push(
@@ -143,6 +173,27 @@ export function buildFacts(mode, ctx) {
 
   lines.push('【确定性对位表】');
   if (mine.length && theirs.length) lines.push(matrixLines(mine, theirs, metrics));
+
+  if (mine.length && theirs.length) {
+    const answers = theirs.map((en) => {
+      const ranked = mine
+        .map((m) => {
+          const atk = bestHit(m, en.type);
+          const thr = bestHit(en, m.type);
+          return {
+            name: m.name,
+            atk: atk.multiplier,
+            thr: thr.multiplier,
+            spd: (m.stats.spe ?? 0) - (en.stats.spe ?? 0),
+          };
+        })
+        .sort((a, b) => b.atk - a.atk || a.thr - b.thr || b.spd - a.spd);
+      return `- ${en.name}（${en.type.join('/')}）：${ranked
+        .map((r) => `${r.name} 攻${multiplierText(r.atk)}/受${multiplierText(r.thr)}/速${r.spd > 0 ? '+' : ''}${r.spd}`)
+        .join('；')}`;
+    });
+    lines.push('【对每个敌方的最佳答案（按进攻倍率从高到低）】\n' + answers.join('\n'));
+  }
 
   if (metrics.sharedWeak.length) {
     lines.push(
@@ -206,7 +257,9 @@ export const SYSTEM_PROMPT = `你是《洛克王国：世界》的对战分析�
 5. 用简体中文，短句、可执行，避免空话。总字数控制在 320 字以内。
 6. 只能讨论【我方阵容】和【敌方阵容】里出现的精灵；建议换人时只能换上我方阵容里的精灵，绝不能建议换上敌方或未列出的精灵。
 7. 特性名、技能名必须原样使用事实中出现的名字，不得自创或改写。
-8. 引用特性或技能效果时按事实原文，不要改写其中的数值、对象或触发条件；不要声称某技能克制事实未列出的属性。`;
+8. 引用特性或技能效果时按事实原文，不要改写其中的数值、对象或触发条件；不要声称某技能克制事实未列出的属性。
+9. 换人建议只能选该敌方精灵的“最佳答案”里进攻≥2倍、且受威胁≤1倍的成员；如果没有这样的成员，就直接说“没有理想答案”，不要推荐≤1倍或受威胁≥2倍的成员。
+10. 描述共同弱点时只写“X系技能可以克制我方 A、B”，不要推断 X 系本身怕什么；事实没有列出的属性关系一律不写。`;
 
 export function outputFormat(mode) {
   if (mode === 'spirit') {
@@ -346,12 +399,57 @@ export function checkGrounding(text, facts, ctxNames = {}) {
     }
   }
 
+  // 换人建议是否与确定性对位表矛盾（对某只敌方换上进攻<2或受威胁>1的成员）
+  const switchIssues = [];
+  const matrix = ctxNames.matrix;
+  if (mine.size && Array.isArray(matrix)) {
+    const enemyNames = ctxNames.enemy ?? [];
+    // 按句子切分：一句里只提到一只敌方时，才把“换X”视为对它的建议
+    for (const rawSegment of text.split(/[。；;\n]/)) {
+      const segment = rawSegment.replace(/[「」『』“”]/g, '');
+      const mentioned = enemyNames.filter((n) => segment.includes(n));
+      if (mentioned.length !== 1) continue;
+      const en = mentioned[0];
+      for (const m of segment.matchAll(/换(?:上|成|为|下)?\s*([\u4e00-\u9fa5]{2,10})/g)) {
+        let member = null;
+        for (let len = Math.min(m[1].length, 8); len >= 2; len -= 1) {
+          const cand = m[1].slice(0, len);
+          if (mine.has(cand)) {
+            member = cand;
+            break;
+          }
+        }
+        if (!member) continue;
+        const cell = matrix.flat().find((c) => c.myName === member && c.enemyName === en);
+        if (!cell) continue;
+        if (cell.attack.multiplier < 2 || cell.threat.multiplier > 1) {
+          const key = `${en}|${member}`;
+          if (!switchIssues.some((x) => x.key === key)) {
+            switchIssues.push({
+              key,
+              enemy: en,
+              member,
+              attack: cell.attack.multiplier,
+              threat: cell.threat.multiplier,
+            });
+          }
+        }
+      }
+    }
+  }
+
   return {
-    grounded: unverified.length === 0 && typeIssues.length === 0 && unknownTerms.length === 0 && outOfTeam.length === 0,
+    grounded:
+      unverified.length === 0 &&
+      typeIssues.length === 0 &&
+      unknownTerms.length === 0 &&
+      outOfTeam.length === 0 &&
+      switchIssues.length === 0,
     numbersChecked: numbers.length,
     unverifiedNumbers: unverified,
     typeIssues,
     unknownTerms,
     outOfTeam,
+    switchIssues: switchIssues.map(({ key, ...rest }) => rest),
   };
 }

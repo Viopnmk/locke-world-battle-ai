@@ -109,6 +109,30 @@ export function TeamAnalysis({ mine, enemy, metrics }: Props) {
       </ol>
       <p className="calc__footnote">打分 = 对敌平均进攻倍率 − 平均受威胁倍率 + 速度奖励，只用于排序，不代替模型判断。</p>
 
+      <h3 className="subhead">每只敌方的最佳答案</h3>
+      <ul className="answer-list">
+        {enemy.map((e, j) => {
+          const cells = mine
+            .map((_, i) => metrics.matrix[i][j])
+            .sort((a, b) => b.attack.multiplier - a.attack.multiplier || a.threat.multiplier - b.threat.multiplier || b.speedEdge - a.speedEdge);
+          const best = cells[0];
+          if (!best) return null;
+          return (
+            <li key={e.id}>
+              <span className="answer-list__enemy" title={e.name}>
+                {shortName(e.name)}
+              </span>
+              <span className="answer-list__best">
+                {shortName(best.myName)} <b>{formatMultiplier(best.attack.multiplier)}</b>
+                <small>
+                  受{formatMultiplier(best.threat.multiplier)} · 速{best.speedEdge > 0 ? `+${best.speedEdge}` : best.speedEdge}
+                </small>
+              </span>
+            </li>
+          );
+        })}
+      </ul>
+
       <div className="shared-resist">
         <h3 className="subhead">我方共同抵抗</h3>
         {metrics.sharedResist.length ? (

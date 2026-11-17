@@ -18,8 +18,8 @@ export interface AiModel {
 
 /** Worker 不可达时用于下拉框的兜底（与 Worker /models 保持一致）。 */
 export const FALLBACK_MODELS: AiModel[] = [
-  { id: '@cf/openai/gpt-oss-20b', label: 'GPT-OSS 20B', note: '响应快、中文稳，默认', recommended: true, free: true },
-  { id: '@cf/zai-org/glm-4.7-flash', label: 'GLM 4.7 Flash', note: '中文表达好，速度快', recommended: true, free: true },
+  { id: '@cf/zai-org/glm-4.7-flash', label: 'GLM 4.7 Flash', note: '中文严谨、最贴数据，默认', recommended: true, free: true },
+  { id: '@cf/openai/gpt-oss-20b', label: 'GPT-OSS 20B', note: '响应快、更活泼，备选', recommended: true, free: true },
   { id: '@cf/meta/llama-4-scout-17b-16e-instruct', label: 'Llama 4 Scout 17B', note: '综合均衡', recommended: true, free: true },
   { id: '@cf/mistralai/mistral-small-3.1-24b-instruct', label: 'Mistral Small 3.1 24B', note: '结构清晰，稍慢', recommended: false, free: true },
   { id: '@cf/meta/llama-3.2-3b-instruct', label: 'Llama 3.2 3B', note: '极快，适合兜底', recommended: false, free: true },
@@ -40,6 +40,7 @@ export interface AiVerification {
   typeIssues: string[];
   unknownTerms?: { term: string; kind: string }[];
   outOfTeam?: string[];
+  switchIssues?: { enemy: string; member: string; attack: number; threat: number }[];
   retried?: boolean;
   factsHash?: string;
   note?: string;

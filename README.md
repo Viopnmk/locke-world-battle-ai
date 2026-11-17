@@ -90,7 +90,7 @@ scripts/
 # 单只分析
 curl -X POST https://locke-world-battle-ai-api.2310566637.workers.dev/analyze \
   -H 'content-type: application/json' \
-  -d '{"mode":"spirit","spiritId":"迪莫","model":"@cf/openai/gpt-oss-20b"}'
+  -d '{"mode":"spirit","spiritId":"迪莫","model":"@cf/zai-org/glm-4.7-flash"}'
 
 # 双方阵容（1–6 只）
 curl -X POST https://locke-world-battle-ai-api.2310566637.workers.dev/analyze \
@@ -105,8 +105,8 @@ curl -X POST https://locke-world-battle-ai-api.2310566637.workers.dev/analyze \
 
 | 模型 ID | 说明 |
 | --- | --- |
-| `@cf/openai/gpt-oss-20b` | 默认。响应快、中文稳（`reasoning_effort: low`） |
-| `@cf/zai-org/glm-4.7-flash` | 中文表达好（关闭 thinking） |
+| `@cf/zai-org/glm-4.7-flash` | 默认。中文严谨、最贴图鉴数据（关闭 thinking） |
+| `@cf/openai/gpt-oss-20b` | 响应快、表达更活泼（`reasoning_effort: low`） |
 | `@cf/meta/llama-4-scout-17b-16e-instruct` | 综合均衡 |
 | `@cf/mistralai/mistral-small-3.1-24b-instruct` | 结构清晰 |
 | `@cf/meta/llama-3.2-3b-instruct` | 极快兜底 |
