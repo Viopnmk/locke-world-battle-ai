@@ -17,6 +17,7 @@ type Filter = 'all' | TeamCategory;
 
 const FILTERS: { key: Filter; label: string }[] = [
   { key: 'all', label: '全部' },
+  { key: 'mixed', label: '自由混搭' },
   { key: 'weather', label: '天气体系' },
   { key: 'rush', label: '速攻压制' },
   { key: 'grind', label: '消耗联防' },
@@ -41,18 +42,20 @@ export function TeamsPage({ onOpenBuild, onImport }: Props) {
           阵容推荐 <span className="panel__hint">特性 × 技能联动</span>
         </h2>
         <p className="ai__lead">
-          {TEAM_PRESETS.length} 套成型队伍，每一套的天气、异常、特性与技能都取自图鉴里的 {meta.spiritCount} 条形态记录，
+          {TEAM_PRESETS.length} 套成型队伍：7 套天气／异常体系，加 6 套跨属性<strong>自由混搭</strong>。
+          每一套的天气、异常、特性与技能都取自图鉴里的 {meta.spiritCount} 条形态记录，
           数字用「对战」页同一个本地引擎现算。点队伍里的名字直接跳到它的<strong>培养方案</strong>，
           或者一键导入对战页看逐只对位。
         </p>
         <div className="engine-pills">
           <span className="engine-pill">🧬 特性与技能都标了出处</span>
           <span className="engine-pill">📐 数据面板现算</span>
+          <span className="engine-pill">🧪 混搭队按全图鉴量化筛选</span>
           <span className="engine-pill">⚡ 一键导入对战</span>
         </div>
       </section>
 
-      <div className="chip-strip chip-strip--filters" role="group" aria-label="按打法筛选阵容">
+      <div className="chip-strip chip-strip--filters chip-strip--wrap" role="group" aria-label="按打法筛选阵容">
         {FILTERS.map((f) => {
           const active = filter === f.key;
           const count = f.key === 'all' ? TEAM_PRESETS.length : TEAM_PRESETS.filter((t) => t.category === f.key).length;
@@ -80,6 +83,7 @@ export function TeamsPage({ onOpenBuild, onImport }: Props) {
           <li>每张卡里的「核心联动」一步一步写清：谁开天气／叠异常，哪条特性在哪一步生效，接哪个技能。</li>
           <li>「数据面板」的种族值、速度、物魔分工、共同弱点、克制覆盖面，全部由本页现算，和「对战」页同一套引擎。</li>
           <li>「共同弱点」照实显示——天气队多为单属性，弱点是成组出现的，卡里同时给出队内谁能抗这一系。</li>
+          <li>「自由混搭」六套由 <code>scripts/screen-mixed.ts</code> 先在全图鉴 662 条形态上量化筛选（属性覆盖面、共同弱点、每个弱点是否被队友接住、特性机制标签），再逐只核对原文定稿；换人后的数字会随数据面板一起变。</li>
           <li>技能数值（属性·威力·能耗）直接来自该精灵自己的学习面，技能石与血脉技能也已计入。</li>
         </ul>
       </section>

@@ -46,7 +46,7 @@ for (const preset of TEAM_PRESETS) {
   if (!preset.tags.length) problems.push(`${label}: 没有 tags`);
   if (!preset.plan.length) problems.push(`${label}: 没有配队逻辑`);
   if (!preset.chain.length) problems.push(`${label}: 没有核心联动`);
-  if (!['weather', 'rush', 'grind'].includes(preset.category)) problems.push(`${label}: 未知分类 ${preset.category}`);
+  if (!['mixed', 'weather', 'rush', 'grind'].includes(preset.category)) problems.push(`${label}: 未知分类 ${preset.category}`);
 
   if (preset.members.length !== 6) problems.push(`${label}: 成员 ${preset.members.length} 只，应为 6 只`);
 
@@ -84,6 +84,18 @@ for (const preset of TEAM_PRESETS) {
     if (!damaging.length) problems.push(`${label}/${spirit.name}: 关键技能里没有输出技能`);
   }
 
+  // 跨属性自由混搭：必须是 6 只不同种族、至少 5 种属性、六只都出现在核心联动里
+  if (preset.category === 'mixed') {
+    const bases = new Set(preset.members.map((m) => presetSpirit(m.spiritId)?.name.replace(/（[^）]*）/g, '') ?? m.spiritId));
+    if (bases.size !== preset.members.length) problems.push(`${label}: 混搭队出现同一种族的不同形态`);
+    const types = new Set(preset.members.flatMap((m) => presetSpirit(m.spiritId)?.type ?? []));
+    if (types.size < 5) problems.push(`${label}: 混搭队只有 ${types.size} 种属性，应 >=5`);
+    const chained = new Set(preset.chain.map((c) => c.spiritId));
+    for (const m of preset.members) {
+      if (!chained.has(m.spiritId)) problems.push(`${label}: 成员 ${presetSpirit(m.spiritId)?.name ?? m.spiritId} 没有出现在核心联动里`);
+    }
+  }
+
   for (const step of preset.chain) {
     chainRefCount += 1;
     if (!memberIds.has(step.spiritId)) problems.push(`${label}: 联动引用了非成员 ${step.spiritId}`);
@@ -117,7 +129,10 @@ for (const preset of TEAM_PRESETS) {
   }
   if (!m.fastest || !m.fastest.spe) problems.push(`${label}: 最快速度没算出来`);
   if (!m.topPower) problems.push(`${label}: 最高单发威力没算出来`);
-  if (!m.physical.length && !m.special.length) problems.push(`${label}: 物攻/魔攻分工没算出来`);
+  // 均衡队（六只物魔攻差距都 <15）是合法结果，只要分工确实算到了每只成员
+  if (m.physical.length + m.special.length + m.balanced.length !== preset.members.length) {
+    problems.push(`${label}: 物攻/魔攻分工没算出来`);
+  }
   const fact = presetFactBlock(preset);
   const bad = badText.exec(fact);
   if (bad) problems.push(`${label}: 云端事实块含 ${bad[0]}`);

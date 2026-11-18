@@ -8,10 +8,12 @@
  */
 import { skillsOf, spiritsById } from './spirits';
 import type { ResolvedSkill, Spirit } from './types';
+import { MIXED_TEAM_PRESETS } from './team-presets-mixed';
 
-export type TeamCategory = 'weather' | 'rush' | 'grind';
+export type TeamCategory = 'mixed' | 'weather' | 'rush' | 'grind';
 
 export const CATEGORY_LABEL: Record<TeamCategory, string> = {
+  mixed: '自由混搭',
   weather: '天气体系',
   rush: '速攻压制',
   grind: '消耗联防',
@@ -52,7 +54,7 @@ export interface TeamPreset {
   members: PresetMember[];
 }
 
-export const TEAM_PRESETS: TeamPreset[] = [
+const CORE_TEAM_PRESETS: TeamPreset[] = [
   /* ------------------------------------------------------------------ 雨天 */
   {
     id: 'rain',
@@ -846,6 +848,13 @@ export const TEAM_PRESETS: TeamPreset[] = [
     ],
   },
 ];
+
+/**
+ * 7 套成型体系 + 6 套跨属性自由混搭。
+ * 混搭队由 scripts/screen-mixed.ts 先做全图鉴量化筛选，再逐只核对原文后写进
+ * team-presets-mixed.ts；原有 7 套一个字都没改。
+ */
+export const TEAM_PRESETS: TeamPreset[] = [...CORE_TEAM_PRESETS, ...MIXED_TEAM_PRESETS];
 
 /* ------------------------------------------------------------ 解析工具 */
 

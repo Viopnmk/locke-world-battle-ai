@@ -179,6 +179,13 @@ a {
   flex: none;
 }
 
+/* 阵容页只有 5 个分类：直接换行，五个都露出来，不藏在横向滚动里 */
+.chip-strip--filters.chip-strip--wrap {
+  flex-wrap: wrap;
+  overflow-x: visible;
+  row-gap: 8px;
+}
+
 .type-chip {
   display: inline-flex;
   align-items: center;

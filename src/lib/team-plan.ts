@@ -35,7 +35,10 @@ export interface TeamPlanMetrics {
 const round1 = (n: number) => Math.round(n * 10) / 10;
 
 function topDamaging(spirit: Spirit) {
-  const dmg = skillsOf(spirit).filter((s) => typeof s.power === 'number' && s.power > 0 && s.type);
+  // 「彗星」这类写着「使用后消耗全部生命」的技能不算单发威力：它是换命，不是炮。
+  const dmg = skillsOf(spirit).filter(
+    (s) => typeof s.power === 'number' && s.power > 0 && s.type && !/使用后消耗全部生命/.test(s.effect ?? ''),
+  );
   return dmg.sort((a, b) => (b.power ?? 0) - (a.power ?? 0) || (a.energy ?? 99) - (b.energy ?? 99))[0] ?? null;
 }
 
