@@ -15,7 +15,9 @@
  * 4) 报告里给出逐只原文证据，写文案时只照抄这些原文。
  */
 import fs from 'node:fs';
+import { bestHit } from '../src/lib/analysis';
 import { skillsOf, spirits } from '../src/lib/spirits';
+import { MIXED_TEAM_PRESETS } from '../src/lib/team-presets-mixed';
 import { matchup, TYPE_ORDER } from '../src/lib/typeChart';
 import type { ResolvedSkill, Spirit } from '../src/lib/types';
 
@@ -65,8 +67,10 @@ function buildProfile(spirit: Spirit): Profile {
   const weak = TYPE_ORDER.filter((_, i) => defMul[i] > 1);
   const resist = TYPE_ORDER.filter((_, i) => defMul[i] < 1);
 
+  // 与「阵容推荐」数据面板同一口径：取这只精灵对目标系别「倍率×威力」最高的那一招，
+  // 而不是「只要有某个 2 倍技能就算」——否则 30 威力的寸拳会把 155 威力的普攻顶掉。
   const coverage = TYPE_ORDER.reduce((mask, t, i) => {
-    const hit = damaging.some((s) => matchup(s.type, [t]).multiplier >= 2);
+    const hit = bestHit(spirit, [t]).multiplier >= 2;
     return hit ? mask | (1 << i) : mask;
   }, 0);
 
@@ -590,6 +594,27 @@ const specs: Spec[] = [
   },
 ];
 
+/* ------------------------------------------------------------------ 定稿六套 */
+
+/** 把最终发布的六套阵容按同一套评估函数复算一遍，确认筛选结果与上线内容一致。 */
+const BY_ID = new Map(PROFILES.map((p) => [p.spirit.id, p]));
+const noWeight = () => 0;
+const finalTeams = MIXED_TEAM_PRESETS.map((preset) => {
+  const team = preset.members.map((m) => {
+    const p = BY_ID.get(m.spiritId);
+    if (!p) throw new Error(`${preset.name}: ${m.spiritId} 不存在`);
+    return p;
+  });
+  return { preset, team, e: evaluate(team, noWeight) };
+});
+
+console.log('\n=== 最终发布的六套混搭队');
+for (const { preset, e } of finalTeams) {
+  console.log(
+    `${preset.name}｜平均 ${e.avgTotal}｜最快 ${e.fastest}｜覆盖 ${e.coverage}/18｜共同弱点 ${e.sharedWeakCount}（${e.sharedWeak.map((w) => w.type + '×' + w.count).join('、') || '无'}）｜弱点接住 ${e.coveredSpots}/${e.weakSpots}${e.allCovered ? '（全覆盖）' : ''}｜属性 ${e.distinctTypes} 种`,
+  );
+}
+
 /* ------------------------------------------------------------------ 挑选与输出 */
 
 const used = new Set<string>();
@@ -735,7 +760,26 @@ for (const { spec, team, e, score, candidates } of chosen) {
   md.push('');
 }
 
+md.push('# 最终发布的六套混搭队（按同一评估函数复算）', '');
+for (const { preset, team, e } of finalTeams) {
+  md.push(
+    `## ${preset.name}（${preset.id}）`,
+    '',
+    `- 覆盖 **${e.coverage}/18**（${e.coverageTypes.join('、')}）｜共同弱点 **${e.sharedWeakCount}**${e.sharedWeak.length ? `（${e.sharedWeak.map((w) => `${w.type}×${w.count}`).join('、')}）` : ''}｜弱点被队友接住 **${e.coveredSpots}/${e.weakSpots}**${e.allCovered ? '（全覆盖 ✓）' : ''}`,
+    `- 平均种族值 ${e.avgTotal}｜最快速度 ${e.fastest}｜属性 ${e.distinctTypes} 种｜角色维度 ${e.roles.join('/')}`,
+    `- 成员：${team.map((p) => `${p.name}（${p.types.join('/')}）`).join('、')}`,
+    '',
+  );
+}
+
+const finalOut = finalTeams.map(({ preset, team, e }) => ({
+  id: preset.id,
+  name: preset.name,
+  eval: e,
+  members: team.map(serialize),
+}));
+
 fs.mkdirSync('.cache', { recursive: true });
-fs.writeFileSync('.cache/mixed-screening.json', JSON.stringify(report, null, 1));
+fs.writeFileSync('.cache/mixed-screening.json', JSON.stringify({ ...report, finalTeams: finalOut }, null, 1));
 fs.writeFileSync('.cache/mixed-screening.md', md.join('\n'));
 console.log('\nwrote .cache/mixed-screening.json / .cache/mixed-screening.md');
