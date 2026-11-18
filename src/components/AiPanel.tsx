@@ -39,8 +39,13 @@ export function AiPanel({ seed }: { seed?: AiSeed | null }) {
   const [mine, setMine] = useState<Spirit[]>(seed?.mine ?? []);
   const [enemy, setEnemy] = useState<Spirit[]>(seed?.enemy ?? []);
   const [picker, setPicker] = useState<null | 'mine' | 'enemy'>(null);
-  /** 从「阵容推荐」导入时记下预设 id，云端解说会带上这套特性×技能联动 */
-  const [presetId, setPresetId] = useState<string | null>(seed?.presetId ?? null);
+  /** 从「阵容推荐」导入时记下预设 id（我方/敌方分开），云端解说会带上这套特性×技能联动 */
+  const [minePresetId, setMinePresetId] = useState<string | null>(
+    seed?.side === 'mine' ? seed.presetId : null,
+  );
+  const [enemyPresetId, setEnemyPresetId] = useState<string | null>(
+    seed?.side === 'enemy' ? seed.presetId : null,
+  );
 
   // 从阵容页再导入一套（或换个方向导入）时，覆盖槽位
 
@@ -59,13 +64,14 @@ export function AiPanel({ seed }: { seed?: AiSeed | null }) {
   const ready = mine.length > 0 && enemy.length > 0;
 
   /** 导入进来的预设（槽位还是这套 6 只时才算数，手动改过就不带上下文） */
-  const preset = presetId ? presetById(presetId) ?? null : null;
+  const preset = minePresetId ? presetById(minePresetId) ?? null : null;
   const presetActive = useMemo(() => {
     if (!preset) return false;
     const ids = new Set(mine.map((s) => s.id));
     return preset.members.every((m) => ids.has(m.spiritId));
   }, [preset, mine]);
   const presetNote = preset && presetActive ? presetFactBlock(preset) : null;
+  const enemyPreset = enemyPresetId ? presetById(enemyPresetId) ?? null : null;
   /** 两边是同一套（导入后另一侧为空时先放的镜像） */
   const mirror =
     mine.length > 0 &&
@@ -77,7 +83,12 @@ export function AiPanel({ seed }: { seed?: AiSeed | null }) {
     if (!seed) return;
     setMine(seed.mine);
     setEnemy(seed.enemy);
-    setPresetId(seed.presetId);
+    if (seed.side === 'mine') {
+      setMinePresetId(seed.presetId);
+      setEnemyPresetId(null);
+    } else {
+      setEnemyPresetId(seed.presetId);
+    }
     setResult(null);
     setError(null);
   }, [seed]);
@@ -104,7 +115,8 @@ export function AiPanel({ seed }: { seed?: AiSeed | null }) {
       const setter = side === 'mine' ? setMine : setEnemy;
       setter((prev) => (prev.length >= MAX_TEAM || prev.some((x) => x.id === s.id) ? prev : [...prev, s]));
       setPicker(null);
-      setPresetId(null);
+      setMinePresetId(null);
+      setEnemyPresetId(null);
       resetResult();
     },
     [picker],
@@ -113,21 +125,24 @@ export function AiPanel({ seed }: { seed?: AiSeed | null }) {
   const removeSpirit = (side: 'mine' | 'enemy', id: string) => {
     const setter = side === 'mine' ? setMine : setEnemy;
     setter((prev) => prev.filter((s) => s.id !== id));
-    setPresetId(null);
+    if (side === 'mine') setMinePresetId(null);
+    else setEnemyPresetId(null);
     resetResult();
   };
 
   const fillDemo = () => {
     setMine(DEMO_MINE.map(byName).filter((s): s is Spirit => s !== null));
     setEnemy(DEMO_ENEMY.map(byName).filter((s): s is Spirit => s !== null));
-    setPresetId(null);
+    setMinePresetId(null);
+    setEnemyPresetId(null);
     resetResult();
   };
 
   const clearAll = () => {
     setMine([]);
     setEnemy([]);
-    setPresetId(null);
+    setMinePresetId(null);
+    setEnemyPresetId(null);
     resetResult();
   };
 
@@ -207,6 +222,13 @@ export function AiPanel({ seed }: { seed?: AiSeed | null }) {
           onAdd={() => setPicker('enemy')}
           onRemove={(id) => removeSpirit('enemy', id)}
         />
+
+        {enemyPreset ? (
+          <p className="preset-note preset-note--enemy">
+            <strong>敌方是「{enemyPreset.name}」</strong>
+            <span>{enemyPreset.sub}·要换对手就回阵容页点另一套的「设为敌方测试」。</span>
+          </p>
+        ) : null}
 
         {preset && presetActive ? (
           <p className="preset-note">

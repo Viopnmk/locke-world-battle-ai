@@ -3514,3 +3514,9 @@ a {
   font-size: 10.5px;
   color: #9a9c93;
 }
+
+.preset-note--enemy {
+  color: #2f6d9e;
+  background: #eef4fb;
+  border-color: #d8e6f5;
+}
