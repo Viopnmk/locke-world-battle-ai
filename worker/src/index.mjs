@@ -166,7 +166,12 @@ async function handleAnalyze(request, env, origin) {
     if (mine.error) return json({ ok: false, error: mine.error }, { status: 400, origin });
     const theirs = resolveTeam(body.enemyTeam, 'enemyTeam');
     if (theirs.error) return json({ ok: false, error: theirs.error }, { status: 400, origin });
-    ctx = { myTeam: mine.list, enemyTeam: theirs.list };
+    ctx = {
+      myTeam: mine.list,
+      enemyTeam: theirs.list,
+      // 站内「阵容推荐」预设：客户端把已核验的特性×技能联动一起传上来，模型照着这套机制解释
+      preset: typeof body.preset === 'string' ? body.preset.slice(0, 4000) : '',
+    };
     const teamM = teamMetrics(mine.list, theirs.list);
     ctxNames = {
       mine: mine.list.map((s) => s.name),

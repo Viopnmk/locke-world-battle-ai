@@ -139,10 +139,10 @@ export function analyzeSpirit(spiritId: string, model?: string): Promise<AiResul
   });
 }
 
-export function analyzeTeam(myTeam: string[], enemyTeam: string[], model?: string): Promise<AiResult> {
+export function analyzeTeam(myTeam: string[], enemyTeam: string[], model?: string, preset?: string | null): Promise<AiResult> {
   return request<AiResult>('/analyze', {
     method: 'POST',
-    body: JSON.stringify({ mode: 'team', myTeam, enemyTeam, model: model || undefined }),
+    body: JSON.stringify({ mode: 'team', myTeam, enemyTeam, model: model || undefined, preset: preset || undefined }),
   });
 }
 

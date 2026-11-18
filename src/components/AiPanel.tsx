@@ -1,7 +1,9 @@
-import { useCallback, useMemo, useRef, useState } from 'react';
+import { useCallback, useMemo, useRef, useState, useEffect } from 'react';
 import { meta, spirits } from '../lib/spirits';
 import type { Spirit } from '../lib/types';
 import { teamMetrics } from '../lib/analysis';
+import { presetById, presetFactBlock } from '../lib/team-presets';
+import type { AiSeed } from '../App';
 import { teamBrief } from '../lib/tactics';
 import { tint, typeColor } from '../lib/typeChart';
 import {
@@ -33,10 +35,14 @@ function byName(name: string): Spirit | null {
  * 对战页：本地战术引擎为主（离线、0 延迟），云端大模型只是可选的润色层，
  * 折叠在 details 里，默认不发起任何网络请求。
  */
-export function AiPanel() {
-  const [mine, setMine] = useState<Spirit[]>([]);
-  const [enemy, setEnemy] = useState<Spirit[]>([]);
+export function AiPanel({ seed }: { seed?: AiSeed | null }) {
+  const [mine, setMine] = useState<Spirit[]>(seed?.mine ?? []);
+  const [enemy, setEnemy] = useState<Spirit[]>(seed?.enemy ?? []);
   const [picker, setPicker] = useState<null | 'mine' | 'enemy'>(null);
+  /** 从「阵容推荐」导入时记下预设 id，云端解说会带上这套特性×技能联动 */
+  const [presetId, setPresetId] = useState<string | null>(seed?.presetId ?? null);
+
+  // 从阵容页再导入一套（或换个方向导入）时，覆盖槽位
 
   const briefRef = useRef<HTMLDivElement | null>(null);
 
@@ -51,6 +57,30 @@ export function AiPanel() {
   const [busy, setBusy] = useState(false);
 
   const ready = mine.length > 0 && enemy.length > 0;
+
+  /** 导入进来的预设（槽位还是这套 6 只时才算数，手动改过就不带上下文） */
+  const preset = presetId ? presetById(presetId) ?? null : null;
+  const presetActive = useMemo(() => {
+    if (!preset) return false;
+    const ids = new Set(mine.map((s) => s.id));
+    return preset.members.every((m) => ids.has(m.spiritId));
+  }, [preset, mine]);
+  const presetNote = preset && presetActive ? presetFactBlock(preset) : null;
+  /** 两边是同一套（导入后另一侧为空时先放的镜像） */
+  const mirror =
+    mine.length > 0 &&
+    mine.length === enemy.length &&
+    mine.every((s) => enemy.some((e) => e.id === s.id));
+
+  // 从阵容页再导入一套（或换个方向导入）时，覆盖槽位
+  useEffect(() => {
+    if (!seed) return;
+    setMine(seed.mine);
+    setEnemy(seed.enemy);
+    setPresetId(seed.presetId);
+    setResult(null);
+    setError(null);
+  }, [seed]);
 
   /** 本地引擎：两边各 1 只起就有结论，纯计算，数据变了立刻重算 */
   const analysis = useMemo(() => {
@@ -74,6 +104,7 @@ export function AiPanel() {
       const setter = side === 'mine' ? setMine : setEnemy;
       setter((prev) => (prev.length >= MAX_TEAM || prev.some((x) => x.id === s.id) ? prev : [...prev, s]));
       setPicker(null);
+      setPresetId(null);
       resetResult();
     },
     [picker],
@@ -82,18 +113,21 @@ export function AiPanel() {
   const removeSpirit = (side: 'mine' | 'enemy', id: string) => {
     const setter = side === 'mine' ? setMine : setEnemy;
     setter((prev) => prev.filter((s) => s.id !== id));
+    setPresetId(null);
     resetResult();
   };
 
   const fillDemo = () => {
     setMine(DEMO_MINE.map(byName).filter((s): s is Spirit => s !== null));
     setEnemy(DEMO_ENEMY.map(byName).filter((s): s is Spirit => s !== null));
+    setPresetId(null);
     resetResult();
   };
 
   const clearAll = () => {
     setMine([]);
     setEnemy([]);
+    setPresetId(null);
     resetResult();
   };
 
@@ -112,7 +146,7 @@ export function AiPanel() {
     setBusy(true);
     setError(null);
     try {
-      setResult(await analyzeTeam(mine.map((s) => s.id), enemy.map((s) => s.id), model));
+      setResult(await analyzeTeam(mine.map((s) => s.id), enemy.map((s) => s.id), model, presetNote));
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -165,6 +199,7 @@ export function AiPanel() {
           onAdd={() => setPicker('mine')}
           onRemove={(id) => removeSpirit('mine', id)}
         />
+
         <TeamSlots
           label="敌方阵容"
           accent="enemy"
@@ -172,6 +207,16 @@ export function AiPanel() {
           onAdd={() => setPicker('enemy')}
           onRemove={(id) => removeSpirit('enemy', id)}
         />
+
+        {preset && presetActive ? (
+          <p className="preset-note">
+            <strong>已导入「{preset.name}」</strong>
+            <span>
+              {preset.sub}·特性×技能联动会一起给云端解说（改过阵容就自动取消）。
+            </span>
+            {mirror ? <span>另一侧还是同一套（镜像对位，50% 持平是正常的）；把敌方换成别的队就是真实对局。</span> : null}
+          </p>
+        ) : null}
 
         <button type="button" className="primary-button" onClick={scrollToBrief} disabled={!ready}>
           {ready ? '⚡ 生成本地实战分析' : '两边各选 1 只后即可生成'}

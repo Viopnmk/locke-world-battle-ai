@@ -11,7 +11,8 @@
     "data:fetch": "python3 scripts/fetch-wiki.py",
     "worker:deploy": "cd worker && npx wrangler deploy",
     "deploy:web": "npm run build && npx wrangler pages deploy dist --project-name=locke-world-battle-ai --branch=main",
-    "verify:tactics": "npx esbuild scripts/verify-tactics.ts --bundle --platform=node --format=esm --outfile=.cache/verify-tactics.mjs && node .cache/verify-tactics.mjs"
+    "verify:tactics": "npx esbuild scripts/verify-tactics.ts --bundle --platform=node --format=esm --outfile=.cache/verify-tactics.mjs && node .cache/verify-tactics.mjs",
+    "verify:teams": "npx esbuild scripts/verify-teams.ts --bundle --platform=node --format=esm --outfile=.cache/verify-teams.mjs && node .cache/verify-teams.mjs"
   },
   "dependencies": {
     "react": "18.3.1",

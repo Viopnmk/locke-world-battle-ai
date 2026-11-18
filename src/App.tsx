@@ -4,11 +4,21 @@ import { SpiritDetail } from './components/SpiritDetail';
 import { TypeCalculator } from './components/TypeCalculator';
 import { AiPanel } from './components/AiPanel';
 import { BuildPage } from './pages/BuildPage';
+import { TeamsPage } from './pages/TeamsPage';
 import { meta, searchSpirits, sortByDex, spirits, typeCounts } from './lib/spirits';
 import type { Spirit } from './lib/types';
 import { tint, typeColor } from './lib/typeChart';
 
-type Tab = 'dex' | 'chart' | 'build' | 'ai';
+type Tab = 'dex' | 'chart' | 'build' | 'teams' | 'ai';
+
+/** 从「阵容推荐」导入对战时，把 6 只精灵和预设 id 一起交给对战页。 */
+export interface AiSeed {
+  mine: Spirit[];
+  enemy: Spirit[];
+  presetId: string | null;
+  side: 'mine' | 'enemy';
+  nonce: number;
+}
 
 const TABS: { key: Tab; label: string; icon: JSX.Element }[] = [
   {
@@ -44,6 +54,18 @@ const TABS: { key: Tab; label: string; icon: JSX.Element }[] = [
     ),
   },
   {
+    key: 'teams',
+    label: '阵容',
+    icon: (
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <circle cx="8" cy="9" r="2.6" />
+        <circle cx="16" cy="9" r="2.6" />
+        <path d="M3.5 19c0-2.5 2-4.3 4.5-4.3S12.5 16.5 12.5 19" />
+        <path d="M11.5 19c0-2.5 2-4.3 4.5-4.3s4.5 1.8 4.5 4.3" />
+      </svg>
+    ),
+  },
+  {
     key: 'ai',
     label: '对战',
     icon: (
@@ -66,6 +88,7 @@ function readHash(): { tab: Tab; spiritId: string | null; buildId: string | null
     return { tab: 'build', spiritId: null, buildId: id || null };
   }
   if (raw === 'chart') return { tab: 'chart', spiritId: null, buildId: null };
+  if (raw === 'teams') return { tab: 'teams', spiritId: null, buildId: null };
   if (raw === 'ai') return { tab: 'ai', spiritId: null, buildId: null };
   return { tab: 'dex', spiritId: null, buildId: null };
 }
@@ -74,6 +97,7 @@ export default function App() {
   const initial = readHash();
   const [tab, setTab] = useState<Tab>(initial.tab);
   const [buildId, setBuildId] = useState<string | null>(initial.buildId);
+  const [aiSeed, setAiSeed] = useState<AiSeed | null>(null);
   const [query, setQuery] = useState('');
   const [typeFilter, setTypeFilter] = useState<string | null>(null);
   const [selected, setSelected] = useState<Spirit | null>(
@@ -146,9 +170,44 @@ export default function App() {
     go('#/');
   }
 
+  /** 阵容推荐 → 对战：#/ai 里直接填好 6 只（另一侧为空时先放同一套，方便马上看对位），并带上预设 id。 */
+  const importTeam = useCallback(
+    (team: Spirit[], side: 'mine' | 'enemy', presetId: string) => {
+      setAiSeed((prev) => {
+        const keep = prev ?? { mine: [], enemy: [], presetId: null, side, nonce: 0 };
+        const mine = side === 'mine' ? team : keep.mine.length ? keep.mine : team;
+        const enemy = side === 'enemy' ? team : keep.enemy.length ? keep.enemy : team;
+        return { mine, enemy, presetId, side, nonce: keep.nonce + 1 };
+      });
+      setSelected(null);
+      setTab('ai');
+      go('#/ai');
+    },
+    [go],
+  );
+
+  /** 阵容推荐 → 培养方案：和从图鉴点进去是同一条路。 */
+  const openBuildFromTeams = useCallback(
+    (spirit: Spirit) => {
+      setSelected(null);
+      setTab('build');
+      setBuildId(spirit.id);
+      go(`#/build/${spirit.id}`);
+    },
+    [go],
+  );
+
   function changeTab(next: Tab) {
     const hash =
-      next === 'chart' ? '#/chart' : next === 'build' ? `#/build${buildId ? `/${buildId}` : ''}` : next === 'ai' ? '#/ai' : '#/';
+      next === 'chart'
+        ? '#/chart'
+        : next === 'build'
+          ? `#/build${buildId ? `/${buildId}` : ''}`
+          : next === 'ai'
+            ? '#/ai'
+            : next === 'teams'
+              ? '#/teams'
+              : '#/';
     if (next === 'dex') setSelected(null);
     setTab(next);
     go(hash);
@@ -251,7 +310,8 @@ export default function App() {
 
         {tab === 'build' ? <BuildPage spiritId={buildId} onPick={pickBuildSpirit} /> : null}
         {tab === 'chart' ? <TypeCalculator onOpenType={openType} /> : null}
-        {tab === 'ai' ? <AiPanel /> : null}
+        {tab === 'teams' ? <TeamsPage onOpenBuild={openBuildFromTeams} onImport={importTeam} /> : null}
+        {tab === 'ai' ? <AiPanel seed={aiSeed} /> : null}
       </main>
 
       <nav className="tabbar" aria-label="主导航">

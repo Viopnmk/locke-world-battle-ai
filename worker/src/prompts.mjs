@@ -124,6 +124,12 @@ export function buildFacts(mode, ctx) {
 
   const lines = [header, `任务：分析双方阵容（我方${mine.length}只，敌方${theirs.length}只），给出阵容互补、首发与换人策略。`];
 
+  // 用户是从站内「阵容推荐」导入的：先把这套预设的特性×技能联动交给模型，避免它另起一套打法
+  if (ctx.preset && ctx.preset.trim()) {
+    lines.push('【用户已选定的站内预设打法（已由图鉴数据核验，请按这套机制解释，不要替换成别的体系）】');
+    lines.push(ctx.preset.trim());
+  }
+
   // 把确定性结论放在最前面：模型最容易读到，也最容易照抄正确数字
   const firstAnswers = theirs.map((en) => {
     const ranked = mine
