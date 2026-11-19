@@ -4,12 +4,7 @@
 **分析全部在浏览器本地完成**（离线、0 延迟、不发请求）；Cloudflare Worker 只是可选的大模型润色层。
 手机浏览器（iPhone 优先）打开即用。
 
-**所有精灵数据都来自 BWIKI（https://wiki.biligame.com/nrc/）**，由 `scripts/fetch-wiki.py` 抓取并生成
-`src/data/*.json`；没有任何手写的数值、技能或克制关系。
 
-- 线上站点：https://locke-world-battle-ai.pages.dev（中国大陆手机网络可直连，不依赖 \*.workers.dev）
-- 可选的 AI Worker：https://locke-world-battle-ai-api.2310566637.workers.dev（打不开也不影响任何分析）
-- 仓库内不含任何 API Key / Token：Worker 使用 Cloudflare Workers AI 绑定，免费额度内运行。
 
 ## 已实现
 
