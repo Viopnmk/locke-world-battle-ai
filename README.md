@@ -145,6 +145,36 @@
 **校验**：`npm run verify:teams` + `npm run verify:tactics` + `npm run build` 全部通过（13 套 / 78 只次 / 270 条技能引用；
 战术引擎 438,244 组对位 + 662 份单只解读 + 300 组随机阵容 0 报错）。
 
+### Phase 8 · 48 小时自动轮换阵容（`#/teams` 只显示当前这一轮的 3 套）
+
+用户要求「把之前的阵容删了，每 48 小时自动更新一次，每次生成全新的 3 套推荐阵容」。
+原来的 13 套静态阵容已归档到 `archive/`（不参与构建），页面上只出现当前轮次的 3 套。
+
+> 注：Phase 6 的 7 套体系队、Phase 7 的 6 套混搭队是当时的静态内容，现已下线；
+> 原文仍可在 `archive/team-presets-legacy.ts.txt` 与 `archive/team-presets-mixed.ts` 里查阅。
+
+- **引擎**（`scripts/rotate-teams.ts`，`npm run rotate:teams`）：只读 `spirits.json` / `skills.json` / `learnsets.json` /
+  `type-chart.json`，在全图鉴 662 条形态上做「战术原型约束 + 贪心起手 + 爬山换人」搜索。
+  - 10 种战术原型：高速爆发 / 重炮强攻 / 联防反击 / 跨属性互补 / 抽能压制 / 吸血续航 / 状态折磨 / 天气联动 / 纯属性强攻 / 换人惩罚；
+  - 每轮按轮次种子挑 3 种互不相同的原型，并排除上一轮用过的原型；
+  - 硬约束：6 只不同种族、18 系打击面、共同弱点条数上限、每个弱点是否有队友以 ≤0.5 倍接住、
+    六种分工（先手 / 核心输出 / 控制 / 辅助 / 承伤 / 收割）都有人贴得上；
+  - 上一轮的 18 只精灵先被排除，凑不出合格阵容时才放宽（并在卡片的「弱点」里写明重叠几只）；
+  - 候选之间有质量下限：只在「与最优分差 3% 以内」的候选里按种子挑，保证每轮不同但不牺牲强度。
+- **产物**：
+  - `src/data/team-rotation.json`：`round` / `updatedAt`（北京时间 +08:00）/ `nextRotationAt`（+48h）/ `intervalHours` /
+    3 套完整阵容（含成员、角色、技能、核心联动、配队逻辑、优势、弱点）；
+  - `src/data/rotation-history.json`：每一轮的原型与 18 个 `spiritId`（下一轮据此去重）。
+- **页面**：`#/teams` 只读 `team-rotation.json`（baked 进静态包，不依赖用户打开网页触发），顶部显示
+  「第 X 轮推荐 · 北京时间 … 更新 · 48 小时自动轮换 · 下次更新 …（倒计时）」，下面是「全部 3 套 + 每种打法」快捷筛选；
+  卡片新增「优势与弱点」（全部现算：平均种族值、最快速度、18 系覆盖、共同弱点、弱点接住数）。
+- **文案口径**：特性名与效果、技能名/属性/威力/能耗/效果全部来自图鉴原文；数字（平均种族值、覆盖、共同弱点、
+  武器威力）全部现算；特性依赖天气而本队没有开天气手段时，联动里会照实标注。
+
+**校验**：`npm run verify:teams` — 3 套 / 18 只 / 54 条技能引用 / 18 步联动逐条比对图鉴；
+另查「3 套原型互不相同、18 只互不重复、角色六项齐全、nextRotationAt = updatedAt + 48h、history 与当前轮一致、
+与上一轮重叠必须为 0（或写进弱点）」，以及数据面板与云端事实块无 `undefined`/`NaN`。
+
 ### 防编造（anti-fabrication）
 
 - 前端只把**精灵 ID**发给 Worker；种族值、技能、特性、属性倍率全部由 Worker 从同一份图鉴 JSON
@@ -166,7 +196,7 @@ src/
   App.tsx                  五个页签（图鉴 / 克制 / 培养 / 阵容 / 对战）与 hash 路由
   styles.css               移动端样式（390px 无横向溢出、触控目标 ≥ 44px）
   pages/BuildPage.tsx      培养方案页（顶栏快捷位、四技能卡、性格/个体值/血脉、详细模式）
-  pages/TeamsPage.tsx      阵容推荐页（5 个分类筛选、核心联动、配队逻辑、六人配置、对抗数据、一键导入对战）
+  pages/TeamsPage.tsx      阵容推荐页（轮换状态条 + 3 套打法筛选、核心联动、配队逻辑、优势与弱点、六人配置、对抗数据、一键导入对战）
   components/
     SpiritList.tsx         列表与卡片
     SpiritDetail.tsx       详情页（种族值、特性、受击、技能、强度分析、AI 解析）
@@ -186,11 +216,12 @@ src/
     analysis.ts            确定性强度 / 阵容 / 对位计算（与 Worker 同规则）
     tactics.ts             本地战术引擎：由图鉴数据生成中文解读（无网络、无模型）
     build-guide.ts         培养方案引擎：四技能 / 性格 / 个体值 / 改血脉（全部由图鉴真数据推演）
-    team-presets.ts        7 套体系队 + 汇总入口：成员、角色、核心联动、配队逻辑、代价（技能名全部可校验）
-    team-presets-mixed.ts  6 套跨属性混搭队（由 screen-mixed.ts 量化筛选后人工核对原文定稿）
+    team-types.ts          阵容推荐的数据结构（TeamPreset / 轮换文件 / 历史）
+    team-presets.ts        读 src/data/team-rotation.json：当前这一轮的 3 套队伍 + 解析与云端事实块
     team-plan.ts           阵容数据面板：平均种族值/速度分层/物魔分工/覆盖面/共同弱点与抗性
   services/ai-client.ts    Worker 端点、模型列表、analyze 调用
-  data/                    fetch-wiki.py 生成的产物（见下）
+  data/                    fetch-wiki.py 生成的产物（见下）+ team-rotation.json / rotation-history.json
+archive/                   已下线的 13 套静态阵容（不参与构建，留档备查）
 worker/
   wrangler.toml            name = locke-world-battle-ai-api，[ai] binding = "AI"
   src/index.mjs            路由、CORS、限流、校验与响应组装
@@ -203,8 +234,10 @@ scripts/
   fetch-wiki.py            抓取 + 解析 + 生成 src/data/*.json（含性格、血脉技能、技能图标）
   lua_table.py             Wiki 数据模块的 Lua 表解析器
   verify-build-guide.ts    培养方案全量校验（662 形态 × 2 流派）
-  verify-teams.ts          阵容推荐校验（成员/特性/技能引用是否都在图鉴数据里；混搭队校验种族/属性/联动覆盖）
-  screen-mixed.ts          跨属性混搭队的全图鉴量化筛选（机制标签 + 六流派约束搜索）
+  rotate-teams.ts          48 小时轮换引擎：10 种战术原型 + 全图鉴约束搜索 → team-rotation.json / rotation-history.json
+  verify-teams.ts          当前轮 3 套阵容校验（成员/特性/技能/角色/元数据/去重/文案/数据面板）
+  run-rotation-job.sh      定时任务：rotate → verify → build → deploy → commit & push
+  screen-mixed.ts          历史：跨属性混搭队的量化筛选（读 archive/ 里的旧六套复算）
   verify-tactics.ts        伤害估算与分析师点评全量校验（全量对位 + 300 组随机阵容）
 ```
 

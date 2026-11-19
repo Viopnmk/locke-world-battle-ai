@@ -1,37 +1,59 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   CATEGORY_LABEL,
   memberSpirits,
   presetSpirit,
+  previousRound,
   resolveMemberSkill,
+  ROTATION_INTERVAL_HOURS,
+  ROTATION_NEXT_AT,
+  ROTATION_ROUND,
+  ROTATION_UPDATED_AT,
   shortName,
   TEAM_PRESETS,
 } from '../lib/team-presets';
-import type { TeamCategory, TeamPreset } from '../lib/team-presets';
+import type { TeamPreset } from '../lib/team-types';
 import { names, teamPlanMetrics } from '../lib/team-plan';
 import { meta } from '../lib/spirits';
 import type { Spirit } from '../lib/types';
 import { tint, typeColor } from '../lib/typeChart';
 
-type Filter = 'all' | TeamCategory;
-
-const FILTERS: { key: Filter; label: string }[] = [
-  { key: 'all', label: '全部' },
-  { key: 'mixed', label: '自由混搭' },
-  { key: 'weather', label: '天气体系' },
-  { key: 'rush', label: '速攻压制' },
-  { key: 'grind', label: '消耗联防' },
-];
+type Filter = 'all' | string;
 
 interface Props {
   onOpenBuild: (spirit: Spirit) => void;
   onImport: (team: Spirit[], side: 'mine' | 'enemy', presetId: string) => void;
 }
 
+/** 2026-11-19T11:35:00+08:00 → 11/19 11:35（北京时间） */
+function beijingShort(iso: string): string {
+  return `${iso.slice(5, 7)}/${iso.slice(8, 10)} ${iso.slice(11, 16)}`;
+}
+
+/** 距离下次轮换还有多久 */
+function countdownText(nextIso: string, now: number): string {
+  const diff = new Date(nextIso).getTime() - now;
+  if (!Number.isFinite(diff)) return '时间待定';
+  if (diff <= 0) return '正在等待下一轮生成';
+  const totalMinutes = Math.floor(diff / 60000);
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  if (hours >= 1) return `还剩 ${hours} 小时 ${minutes} 分`;
+  return `还剩 ${minutes} 分`;
+}
+
 export function TeamsPage({ onOpenBuild, onImport }: Props) {
   const [filter, setFilter] = useState<Filter>('all');
+  const [now, setNow] = useState(() => Date.now());
+  const prev = previousRound();
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 30_000);
+    return () => window.clearInterval(timer);
+  }, []);
+
   const list = useMemo(
-    () => (filter === 'all' ? TEAM_PRESETS : TEAM_PRESETS.filter((t) => t.category === filter)),
+    () => (filter === 'all' ? TEAM_PRESETS : TEAM_PRESETS.filter((t) => t.id === filter)),
     [filter],
   );
 
@@ -39,51 +61,83 @@ export function TeamsPage({ onOpenBuild, onImport }: Props) {
     <div className="teams">
       <section className="panel panel--engine teams__intro">
         <h2 className="panel__title">
-          阵容推荐 <span className="panel__hint">特性 × 技能联动</span>
+          阵容推荐 <span className="panel__hint">48 小时自动轮换</span>
         </h2>
         <p className="ai__lead">
-          {TEAM_PRESETS.length} 套成型队伍：7 套天气／异常体系，加 6 套跨属性<strong>自由混搭</strong>。
-          每一套的天气、异常、特性与技能都取自图鉴里的 {meta.spiritCount} 条形态记录，
-          数字用「对战」页同一个本地引擎现算。点队伍里的名字直接跳到它的<strong>培养方案</strong>，
-          或者一键导入对战页看逐只对位。
+          每 {ROTATION_INTERVAL_HOURS} 小时由全图鉴（{meta.spiritCount} 条形态记录）重新组 3 套<strong>全新</strong>阵容：
+          3 种不同打法，18 只互不重复的精灵，特性与技能全部取自 BWIKI 原文，数字用「对战」页同一个本地引擎现算。
+          点队伍里的名字直接跳到它的<strong>培养方案</strong>，或者一键导入对战页看逐只对位。
         </p>
         <div className="engine-pills">
+          <span className="engine-pill">🔄 每 {ROTATION_INTERVAL_HOURS} 小时换 3 套</span>
           <span className="engine-pill">🧬 特性与技能都标了出处</span>
           <span className="engine-pill">📐 数据面板现算</span>
-          <span className="engine-pill">🧪 混搭队按全图鉴量化筛选</span>
           <span className="engine-pill">⚡ 一键导入对战</span>
         </div>
       </section>
 
-      <div className="chip-strip chip-strip--filters chip-strip--wrap" role="group" aria-label="按打法筛选阵容">
-        {FILTERS.map((f) => {
-          const active = filter === f.key;
-          const count = f.key === 'all' ? TEAM_PRESETS.length : TEAM_PRESETS.filter((t) => t.category === f.key).length;
-          return (
-            <button
-              key={f.key}
-              type="button"
-              className={`type-chip type-chip--pick team-filter${active ? ' is-active' : ''}`}
-              onClick={() => setFilter(f.key)}
-              aria-pressed={active}
-            >
-              {f.label} {count}
-            </button>
-          );
-        })}
-      </div>
+      <section className="panel rotation-bar" aria-label="轮换状态">
+        <div className="rotation-bar__head">
+          <span className="rotation-badge">第 {ROTATION_ROUND} 轮推荐</span>
+          <span className="rotation-bar__time">北京时间 {beijingShort(ROTATION_UPDATED_AT)} 更新</span>
+        </div>
+        <p className="rotation-bar__next">
+          <span aria-hidden="true">🔄</span> {ROTATION_INTERVAL_HOURS} 小时自动轮换 · 下次更新{' '}
+          {beijingShort(ROTATION_NEXT_AT)}（{countdownText(ROTATION_NEXT_AT, now)}）
+        </p>
+        {prev ? (
+          <p className="rotation-bar__prev">
+            上一轮（第 {prev.round} 轮 · {prev.archetypes.map((a) => a.label).join(' / ')}）已归档，不再展示。
+          </p>
+        ) : null}
+
+        <div className="chip-strip chip-strip--filters chip-strip--wrap" role="group" aria-label="本轮 3 套打法">
+          <button
+            type="button"
+            className={`type-chip type-chip--pick team-filter${filter === 'all' ? ' is-active' : ''}`}
+            onClick={() => setFilter('all')}
+            aria-pressed={filter === 'all'}
+          >
+            全部 {TEAM_PRESETS.length} 套
+          </button>
+          {TEAM_PRESETS.map((t) => {
+            const active = filter === t.id;
+            return (
+              <button
+                key={t.id}
+                type="button"
+                className={`type-chip type-chip--pick team-filter${active ? ' is-active' : ''}`}
+                onClick={() => setFilter(active ? 'all' : t.id)}
+                aria-pressed={active}
+              >
+                {t.archetypeLabel} {t.name}
+              </button>
+            );
+          })}
+        </div>
+      </section>
 
       {list.map((preset) => (
         <TeamCard key={preset.id} preset={preset} onOpenBuild={onOpenBuild} onImport={onImport} />
       ))}
 
       <section className="panel panel--quiet data-note">
-        <h2 className="panel__title">怎么读这些队伍</h2>
+        <h2 className="panel__title">这一轮的 3 套是怎么来的</h2>
         <ul>
-          <li>每张卡里的「核心联动」一步一步写清：谁开天气／叠异常，哪条特性在哪一步生效，接哪个技能。</li>
-          <li>「数据面板」的种族值、速度、物魔分工、共同弱点、克制覆盖面，全部由本页现算，和「对战」页同一套引擎。</li>
-          <li>「共同弱点」照实显示——天气队多为单属性，弱点是成组出现的，卡里同时给出队内谁能抗这一系。</li>
-          <li>「自由混搭」六套由 <code>scripts/screen-mixed.ts</code> 先在全图鉴 662 条形态上量化筛选（属性覆盖面、共同弱点、每个弱点是否被队友接住、特性机制标签），再逐只核对原文定稿；换人后的数字会随数据面板一起变。</li>
+          <li>
+            由 <code>scripts/rotate-teams.ts</code> 生成（<code>npm run rotate:teams</code>）：先在全图鉴上按战术原型做约束搜索
+            （打击面、共同弱点、每个弱点是否有队友以 ≤0.5 倍接住、六种分工是否都有人），再做爬山换人把最弱的一环换掉。
+          </li>
+          <li>
+            每轮从 10 种战术原型里挑 3 种（高速爆发 / 重炮强攻 / 联防反击 / 跨属性互补 / 抽能压制 / 吸血续航 / 状态折磨 / 天气联动 /
+            纯属性强攻 / 换人惩罚），并且不与上一轮重复；上一轮的 18 只精灵在全图鉴范围内先被排除，
+            只有凑不出合格阵容时才会放宽（卡片的「弱点」里会写明重叠了几只）。
+          </li>
+          <li>
+            候选之间还有质量下限：只在「与最优分差 3% 以内」的候选里按轮次种子挑一支，所以每轮都不一样，但不会为了换而换。
+          </li>
+          <li>「核心联动」逐步写清谁先上场、哪条特性在哪一步生效、接哪个技能；特性与技能的效果文字都是图鉴原文。</li>
+          <li>「优势」与「弱点」全部现算：平均种族值、最快速度、覆盖 18 系里的几种、共同弱点几条、弱点接住几个。</li>
           <li>技能数值（属性·威力·能耗）直接来自该精灵自己的学习面，技能石与血脉技能也已计入。</li>
         </ul>
       </section>
@@ -108,7 +162,7 @@ function TeamCard({
       <header className="team-card__head">
         <div className="team-card__title">
           <p className="team-card__kicker">
-            {CATEGORY_LABEL[preset.category]} · {preset.sub}
+            {CATEGORY_LABEL[preset.category] ?? preset.archetypeLabel} · {preset.sub}
           </p>
           <h2 id={`team-${preset.id}`}>{preset.name}</h2>
         </div>
@@ -194,8 +248,19 @@ function TeamCard({
             <li key={line}>{line}</li>
           ))}
         </ul>
+      </section>
+
+      <section className="team-section">
+        <h3 className="team-section__title">
+          优势与弱点 <span>数据现算，弱点照实写</span>
+        </h3>
+        <ul className="team-pros">
+          {preset.pros.map((line) => (
+            <li key={line}>{line}</li>
+          ))}
+        </ul>
         <p className="team-risk">
-          <span>代价</span>
+          <span>弱点</span>
           {preset.risk}
         </p>
       </section>

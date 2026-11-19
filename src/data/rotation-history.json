@@ -1,0 +1,114 @@
+{
+ "rounds": [
+  {
+   "round": 1,
+   "updatedAt": "2026-11-19T11:42:24+08:00",
+   "nextRotationAt": "2026-11-21T11:42:24+08:00",
+   "archetypes": [
+    {
+     "id": "nuke",
+     "label": "重炮强攻"
+    },
+    {
+     "id": "drain",
+     "label": "抽能压制"
+    },
+    {
+     "id": "rush",
+     "label": "高速爆发"
+    }
+   ],
+   "teams": [
+    {
+     "id": "r1-nuke",
+     "name": "龙系重炮队",
+     "category": "nuke",
+     "archetype": "nuke",
+     "archetypeLabel": "重炮强攻",
+     "spiritIds": [
+      "pet_000313",
+      "pet_000608",
+      "pet_000555",
+      "pet_000331",
+      "pet_000185",
+      "pet_000464"
+     ],
+     "spiritNames": [
+      "龙鱼",
+      "银月狼王",
+      "伊兰龙",
+      "伊兰亚龙",
+      "波多西",
+      "游蛇魔使"
+     ]
+    },
+    {
+     "id": "r1-drain",
+     "name": "抽能队",
+     "category": "tax",
+     "archetype": "drain",
+     "archetypeLabel": "抽能压制",
+     "spiritIds": [
+      "pet_000106",
+      "pet_000274",
+      "pet_000044",
+      "pet_000043",
+      "pet_000091",
+      "pet_000549"
+     ],
+     "spiritNames": [
+      "彩蝶鲨",
+      "雪灵",
+      "花影羚羊",
+      "铃兰羊",
+      "瞌睡王",
+      "恶魔狼王"
+     ]
+    },
+    {
+     "id": "r1-rush",
+     "name": "高速队",
+     "category": "rush",
+     "archetype": "rush",
+     "archetypeLabel": "高速爆发",
+     "spiritIds": [
+      "pet_000348",
+      "pet_000660",
+      "pet_000550",
+      "pet_000592",
+      "pet_000544",
+      "pet_000593"
+     ],
+     "spiritNames": [
+      "噼啪鸟",
+      "影子剪纸",
+      "烈火战神",
+      "风暴酷拉",
+      "神谕鲨",
+      "武斗酷猫"
+     ]
+    }
+   ],
+   "spiritIds": [
+    "pet_000313",
+    "pet_000608",
+    "pet_000555",
+    "pet_000331",
+    "pet_000185",
+    "pet_000464",
+    "pet_000106",
+    "pet_000274",
+    "pet_000044",
+    "pet_000043",
+    "pet_000091",
+    "pet_000549",
+    "pet_000348",
+    "pet_000660",
+    "pet_000550",
+    "pet_000592",
+    "pet_000544",
+    "pet_000593"
+   ]
+  }
+ ]
+}

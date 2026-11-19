@@ -3527,3 +3527,67 @@ a {
   background: #eef4fb;
   border-color: #d8e6f5;
 }
+
+/* ---------------------------------------------------------------- 轮换状态条（48 小时自动轮换） */
+.rotation-bar {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.rotation-bar__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.rotation-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 10px;
+  border-radius: 999px;
+  background: #edf6ee;
+  border: 1px solid #cfe3d3;
+  color: #2f6b3d;
+  font-size: 12.5px;
+  font-weight: 700;
+}
+
+.rotation-bar__time {
+  font-size: 11.5px;
+  color: var(--ink-soft);
+}
+
+.rotation-bar__next {
+  margin: 0;
+  font-size: 12.6px;
+  font-weight: 600;
+  color: #2f3a35;
+}
+
+.rotation-bar__prev {
+  margin: 0;
+  font-size: 11.5px;
+  color: #8a8f98;
+}
+
+.team-pros {
+  margin: 0;
+  padding-left: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.team-pros li {
+  font-size: 12.4px;
+  line-height: 1.72;
+  color: #2f3a35;
+}
+
+.team-pros li::marker {
+  color: #2f6b3d;
+}

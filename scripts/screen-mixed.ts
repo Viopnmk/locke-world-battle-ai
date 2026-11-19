@@ -17,7 +17,8 @@
 import fs from 'node:fs';
 import { bestHit } from '../src/lib/analysis';
 import { skillsOf, spirits } from '../src/lib/spirits';
-import { MIXED_TEAM_PRESETS } from '../src/lib/team-presets-mixed';
+// Phase 8 起这 6 套混搭队已归档（#/teams 只显示 48 小时轮换的 3 套），脚本保留用于复算历史结果
+import { MIXED_TEAM_PRESETS } from '../archive/team-presets-mixed';
 import { matchup, TYPE_ORDER } from '../src/lib/typeChart';
 import type { ResolvedSkill, Spirit } from '../src/lib/types';
 

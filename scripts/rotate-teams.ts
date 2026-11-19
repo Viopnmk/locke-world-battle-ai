@@ -1,0 +1,1718 @@
+/**
+ * 48 小时自动轮换阵容引擎
+ *
+ *   npm run rotate:teams            # 生成下一轮（3 套全新阵容）并写回 src/data
+ *   npm run rotate:teams -- --if-due   # 定时任务用：没到 nextRotationAt 就什么都不做
+ *   npm run rotate:teams -- --dry      # 只打印候选，不写文件
+ *
+ * 输入只有 src/data 里的真实数据：spirits.json（662 只形态）、skills.json（599 个技能）、
+ * learnsets.json（可学记录）、type-chart.json（18 系倍率）。输出：
+ *   src/data/team-rotation.json     当前这一轮的 3 套阵容（页面直接读它）
+ *   src/data/rotation-history.json  每一轮的战术原型与 18 个 spiritId（下一轮据此去重）
+ *
+ * 文案口径：特性原文照抄、技能名称/属性/威力/能耗/效果全部来自图鉴，数字现算。
+ * 不写图鉴里没有的机制，也不为了「不一样」而牺牲强度。
+ */
+import fs from 'node:fs';
+import path from 'node:path';
+import { bestHit } from '../src/lib/analysis';
+import { meta, skillsOf, spirits } from '../src/lib/spirits';
+import { matchup, TYPE_ORDER } from '../src/lib/typeChart';
+import type {
+  ChainStep,
+  PresetMember,
+  PresetSkillRef,
+  RotationHistoryFile,
+  RotationRoundMeta,
+  TeamCategory,
+  TeamPreset,
+  TeamRotationFile,
+} from '../src/lib/team-types';
+import type { ResolvedSkill, Spirit } from '../src/lib/types';
+
+/* ------------------------------------------------------------------ 基础工具 */
+
+const ROOT = process.cwd();
+const DATA_DIR = path.join(ROOT, 'src/data');
+const ROTATION_PATH = path.join(DATA_DIR, 'team-rotation.json');
+const HISTORY_PATH = path.join(DATA_DIR, 'rotation-history.json');
+const INTERVAL_HOURS = 48;
+const TZ_OFFSET_MINUTES = 8 * 60; // Asia/Shanghai
+
+const round1 = (n: number) => Math.round(n * 10) / 10;
+const mean = (arr: number[]) => (arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : 0);
+const shortName = (name: string) => name.replace(/（[^）]*）/g, '');
+const baseName = (name: string) => name.replace(/（[^）]*）/g, '');
+const TI = new Map(TYPE_ORDER.map((t, i) => [t, i]));
+
+function mulberry32(seed: number) {
+  let a = seed >>> 0;
+  return () => {
+    a |= 0;
+    a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function popcount(mask: number): number {
+  let c = 0;
+  let m = mask;
+  while (m) {
+    m &= m - 1;
+    c += 1;
+  }
+  return c;
+}
+
+/** 北京时间 ISO 字符串：2026-11-19T11:40:00+08:00 */
+function beijingIso(date: Date): string {
+  const shifted = new Date(date.getTime() + TZ_OFFSET_MINUTES * 60 * 1000);
+  const p = (n: number) => String(n).padStart(2, '0');
+  return (
+    `${shifted.getUTCFullYear()}-${p(shifted.getUTCMonth() + 1)}-${p(shifted.getUTCDate())}` +
+    `T${p(shifted.getUTCHours())}:${p(shifted.getUTCMinutes())}:${p(shifted.getUTCSeconds())}+08:00`
+  );
+}
+
+function isDamaging(sk: ResolvedSkill): boolean {
+  return typeof sk.power === 'number' && sk.power > 0 && Boolean(sk.type);
+}
+
+/** 技能简写：名称（属性·类别·威力·能耗） */
+function skillTag(sk: ResolvedSkill): string {
+  const bits = [sk.type, sk.category];
+  if (sk.power) bits.push(`威力${sk.power}`);
+  if (typeof sk.energy === 'number') bits.push(`能耗${sk.energy}`);
+  return `${sk.name}（${bits.join('·')}）`;
+}
+
+/** 技能效果原文摘要：优先在第一个句号/分号处截断，避免长句撑爆卡片 */
+function effectBrief(text: string | null | undefined, max = 58): string {
+  const t = (text ?? '').replace(/\s+/g, '');
+  if (!t) return '';
+  const cut = t.search(/[。；]/);
+  if (cut > 0 && cut <= max) return t.slice(0, cut + 1);
+  return t.length > max ? `${t.slice(0, max)}…` : t;
+}
+
+/** 名字列表：「A、B、C」（数量超过 limit 时补「等 N 只」） */
+function joinNames(list: string[], limit = 3): string {
+  if (!list.length) return '无';
+  const shown = list.slice(0, limit).join('、');
+  return list.length > limit ? `${shown} 等 ${list.length} 只` : shown;
+}
+
+/** 属性列表：「A、B、C」（量词用「种」） */
+function joinTypes(list: string[], limit = 5): string {
+  if (!list.length) return '无';
+  const shown = list.slice(0, limit).join('、');
+  return list.length > limit ? `${shown} 等 ${list.length} 种` : shown;
+}
+
+/* ------------------------------------------------------------------ 机制标签 */
+
+const MECH: { tag: string; label: string; test: RegExp }[] = [
+  { tag: 'steal', label: '偷能量', test: /偷取[^。；]{0,6}能量/ },
+  { tag: 'tax', label: '抬能耗', test: /全技能能耗\+|失去能耗之差|敌方失去\d+能量/ },
+  { tag: 'leech', label: '吸血', test: /吸血/ },
+  { tag: 'burn', label: '灼烧', test: /灼烧/ },
+  { tag: 'poison', label: '中毒', test: /中毒/ },
+  { tag: 'freeze', label: '冻结', test: /冻结/ },
+  { tag: 'switch', label: '换人惩罚', test: /敌方精灵离场后|本回合更换精灵|更换入场的精灵/ },
+  { tag: 'comeback', label: '残血反打', test: /生命低于\d+%|受到致命伤害|力竭/ },
+  { tag: 'sustain', label: '回复续航', test: /回复[^。；]{0,6}生命|回复等量生命|回复\d+%生命/ },
+  { tag: 'charge', label: '蓄力', test: /蓄力/ },
+  { tag: 'weather', label: '天气', test: /天气/ },
+  { tag: 'starmark', label: '星陨印记', test: /星陨/ },
+  { tag: 'priority', label: '先手', test: /先手\+\d|迅捷/ },
+];
+
+const MECH_LABEL = new Map(MECH.map((m) => [m.tag, m.label]));
+const CONTROL_TAGS = ['tax', 'steal', 'switch', 'burn', 'poison', 'freeze'];
+const STATUS_TAGS = ['burn', 'poison', 'freeze'];
+
+/* ------------------------------------------------------------------ 精灵画像 */
+
+interface Profile {
+  spirit: Spirit;
+  id: string;
+  name: string;
+  base: string;
+  types: string[];
+  total: number;
+  stats: { hp: number; atk: number; def: number; spa: number; spd: number; spe: number };
+  bulk: number;
+  mainAtk: number;
+  mainIsPhysical: boolean;
+  coverage: number;
+  coverageTypes: string[];
+  defMul: number[];
+  weak: string[];
+  resist: string[];
+  maxPower: number;
+  maxPowerSkill: ResolvedSkill | null;
+  avgEnergy: number;
+  traitText: string;
+  traitTags: Set<string>;
+  skillTags: Set<string>;
+  tags: Set<string>;
+  keySkills: ResolvedSkill[];
+  prioritySkills: ResolvedSkill[];
+  supportSkills: ResolvedSkill[];
+}
+
+function damagers(p: Spirit): ResolvedSkill[] {
+  return skillsOf(p)
+    .filter((s) => isDamaging(s) && !/使用后消耗全部生命/.test(s.effect ?? ''))
+    .sort((a, b) => (b.power ?? 0) - (a.power ?? 0) || (a.energy ?? 99) - (b.energy ?? 99));
+}
+
+function buildProfile(spirit: Spirit): Profile {
+  const skills = skillsOf(spirit);
+  const dmg = damagers(spirit);
+  const defMul = TYPE_ORDER.map((atk) => matchup(atk, spirit.type).multiplier);
+  const weak = TYPE_ORDER.filter((_, i) => defMul[i] > 1);
+  const resist = TYPE_ORDER.filter((_, i) => defMul[i] < 1);
+
+  const coverage = TYPE_ORDER.reduce((mask, t, i) => {
+    const hit = bestHit(spirit, [t]).multiplier >= 2;
+    return hit ? mask | (1 << i) : mask;
+  }, 0);
+
+  const trait = spirit.trait;
+  const traitText = trait ? `${trait.name}：${trait.effect}` : '';
+  const traitTags = new Set<string>();
+  const skillTags = new Set<string>();
+  for (const rule of MECH) {
+    if (traitText && rule.test.test(traitText)) traitTags.add(rule.tag);
+  }
+  for (const sk of skills) {
+    const text = sk.effect ?? '';
+    if (!text) continue;
+    for (const rule of MECH) if (rule.test.test(text)) skillTags.add(rule.tag);
+  }
+
+  const tags = new Set<string>([...traitTags, ...skillTags]);
+  if (dmg.some((s) => (s.power ?? 0) >= 150)) tags.add('nuke');
+  if ((spirit.stats.spe ?? 0) >= 120) tags.add('fast');
+  const bulk = (spirit.stats.hp ?? 0) + (spirit.stats.def ?? 0) + (spirit.stats.spd ?? 0);
+  if (bulk >= 330) tags.add('bulk');
+
+  const atk = spirit.stats.atk ?? 0;
+  const spa = spirit.stats.spa ?? 0;
+  const mainIsPhysical = atk >= spa;
+  const keySkills = [...skills]
+    .filter((s) => MECH.some((r) => r.test.test(s.effect ?? '')) || (s.power ?? 0) >= 130)
+    .sort((a, b) => (b.power ?? 0) - (a.power ?? 0) || (a.energy ?? 99) - (b.energy ?? 99))
+    .slice(0, 14);
+
+  const prioritySkills = dmg
+    .filter((s) => /先手\+\d|迅捷/.test(s.effect ?? ''))
+    .sort((a, b) => (b.power ?? 0) - (a.power ?? 0));
+  const supportSkills = skills
+    .filter((s) => !isDamaging(s) && Boolean(s.effect))
+    .sort((a, b) => (a.energy ?? 99) - (b.energy ?? 99));
+
+  return {
+    spirit,
+    id: spirit.id,
+    name: spirit.name,
+    base: baseName(spirit.name),
+    types: spirit.type,
+    total: spirit.stats.total ?? 0,
+    stats: {
+      hp: spirit.stats.hp ?? 0,
+      atk,
+      def: spirit.stats.def ?? 0,
+      spa,
+      spd: spirit.stats.spd ?? 0,
+      spe: spirit.stats.spe ?? 0,
+    },
+    bulk,
+    mainAtk: Math.max(atk, spa),
+    mainIsPhysical,
+    coverage,
+    coverageTypes: TYPE_ORDER.filter((_, i) => coverage & (1 << i)),
+    defMul,
+    weak,
+    resist,
+    maxPower: dmg[0]?.power ?? 0,
+    maxPowerSkill: dmg[0] ?? null,
+    avgEnergy: dmg.length ? mean(dmg.slice(0, 3).map((s) => s.energy ?? 0)) : 0,
+    traitText,
+    traitTags,
+    skillTags,
+    tags,
+    keySkills,
+    prioritySkills,
+    supportSkills,
+  };
+}
+
+const PROFILES = spirits
+  .filter((s) => (s.stats.total ?? 0) > 0)
+  .map(buildProfile);
+const BY_ID = new Map(PROFILES.map((p) => [p.id, p]));
+
+/** 全图鉴通用的技能石杂食者，属性面板好看但没有专属机制，筛选时排除 */
+const GLOBAL_EXCLUDE = new Set(['学院呱呱']);
+
+/* ------------------------------------------------------------------ 队伍评估 */
+
+interface Eval {
+  coverage: number;
+  coverageTypes: string[];
+  sharedWeak: { type: string; count: number; members: string[]; maxMul: number }[];
+  sharedWeakCount: number;
+  /** 单一属性最多能克制队里几只（5 只以上视为结构性问题） */
+  worstWeakCount: number;
+  sharedResist: { type: string; count: number }[];
+  weakSpots: number;
+  coveredSpots: number;
+  allCovered: boolean;
+  avgTotal: number;
+  maxTotal: { name: string; total: number } | null;
+  avgTopPower: number;
+  fastest: { name: string; spe: number } | null;
+  slowest: { name: string; spe: number } | null;
+  fastCount: number;
+  midCount: number;
+  distinctTypes: number;
+  avgBulk: number;
+  avgTopEnergy: number;
+  tagScore: number;
+}
+
+function controlScore(p: Profile): number {
+  return CONTROL_TAGS.reduce((acc, t) => acc + (p.traitTags.has(t) ? 2 : 0) + (p.skillTags.has(t) ? 1 : 0), 0);
+}
+
+function supportScore(p: Profile): number {
+  let s = 0;
+  if (p.traitTags.has('sustain')) s += 2;
+  if (p.traitTags.has('leech')) s += 2;
+  if (p.skillTags.has('sustain')) s += 1;
+  s += p.supportSkills.filter((sk) => /回复|减\u4f24|护盾|提升|清除|免疫/.test(sk.effect ?? '')).length * 0.4;
+  return s;
+}
+
+function evaluate(team: Profile[], weight: (p: Profile) => number): Eval {
+  let coverage = 0;
+  let total = 0;
+  let bulk = 0;
+  let power = 0;
+  let energy = 0;
+  let powerCount = 0;
+  let fastest: { name: string; spe: number } | null = null;
+  let slowest: { name: string; spe: number } | null = null;
+  let maxTotal: { name: string; total: number } | null = null;
+  const typeSet = new Set<string>();
+  let tagScore = 0;
+
+  for (const p of team) {
+    coverage |= p.coverage;
+    total += p.total;
+    bulk += p.bulk;
+    if (p.maxPowerSkill) {
+      power += p.maxPower;
+      energy += p.maxPowerSkill.energy ?? 0;
+      powerCount += 1;
+    }
+    if (!fastest || p.stats.spe > fastest.spe) fastest = { name: p.name, spe: p.stats.spe };
+    if (!slowest || p.stats.spe < slowest.spe) slowest = { name: p.name, spe: p.stats.spe };
+    if (!maxTotal || p.total > maxTotal.total) maxTotal = { name: p.name, total: p.total };
+    for (const t of p.types) typeSet.add(t);
+    tagScore += weight(p);
+  }
+
+  const sharedWeak: Eval['sharedWeak'] = [];
+  for (let i = 0; i < TYPE_ORDER.length; i += 1) {
+    const members = team.filter((p) => p.defMul[i] >= 2);
+    if (members.length >= 2) {
+      sharedWeak.push({
+        type: TYPE_ORDER[i],
+        count: members.length,
+        members: members.map((p) => p.name),
+        maxMul: Math.max(...members.map((p) => p.defMul[i])),
+      });
+    }
+  }
+  sharedWeak.sort((a, b) => b.count - a.count || b.maxMul - a.maxMul);
+
+  const sharedResist: Eval['sharedResist'] = [];
+  for (let i = 0; i < TYPE_ORDER.length; i += 1) {
+    const count = team.filter((p) => p.defMul[i] <= 0.5).length;
+    if (count >= 2) sharedResist.push({ type: TYPE_ORDER[i], count });
+  }
+  sharedResist.sort((a, b) => b.count - a.count);
+
+  let weakSpots = 0;
+  let coveredSpots = 0;
+  for (const p of team) {
+    for (const w of p.weak) {
+      weakSpots += 1;
+      const i = TI.get(w)!;
+      if (team.some((other) => other !== p && other.defMul[i] <= 0.5)) coveredSpots += 1;
+    }
+  }
+
+  return {
+    coverage: popcount(coverage),
+    coverageTypes: TYPE_ORDER.filter((_, i) => coverage & (1 << i)),
+    sharedWeak,
+    sharedWeakCount: sharedWeak.length,
+    worstWeakCount: sharedWeak.length ? Math.max(...sharedWeak.map((w) => w.count)) : 0,
+    sharedResist,
+    weakSpots,
+    coveredSpots,
+    allCovered: weakSpots > 0 && coveredSpots === weakSpots,
+    avgTotal: team.length ? round1(total / team.length) : 0,
+    maxTotal,
+    avgTopPower: powerCount ? Math.round(power / powerCount) : 0,
+    fastest,
+    slowest,
+    fastCount: team.filter((p) => p.stats.spe >= 120).length,
+    midCount: team.filter((p) => p.stats.spe >= 100 && p.stats.spe < 120).length,
+    distinctTypes: typeSet.size,
+    avgBulk: team.length ? Math.round(bulk / team.length) : 0,
+    avgTopEnergy: powerCount ? round1(energy / powerCount) : 0,
+    tagScore,
+  };
+}
+
+/* ------------------------------------------------------------------ 角色分工 */
+
+const ROLE_ORDER = ['先手', '核心输出', '承伤', '控制', '辅助', '收割'] as const;
+/** 卡片里的阅读顺序：谁先上场 → 谁控场 → 谁输出 → 谁续航 → 谁承伤 → 谁收尾 */
+const CHAIN_ORDER = ['先手', '控制', '核心输出', '辅助', '承伤', '收割'] as const;
+type RoleName = (typeof ROLE_ORDER)[number];
+
+function roleFit(p: Profile, role: RoleName): number {
+  switch (role) {
+    case '先手':
+      return Math.max(0, p.stats.spe - 100) / 3 + (p.prioritySkills.length ? 2 : 0);
+    case '核心输出':
+      return p.maxPower / 25 + p.mainAtk / 40;
+    case '承伤':
+      return Math.max(0, p.bulk - 260) / 12;
+    case '控制':
+      return controlScore(p) * 1.6;
+    case '辅助':
+      return supportScore(p) * 1.4;
+    case '收割':
+      // 收割要「跑得动」：速度 110 以上才谈得上收残，除非特性本身是残血反打
+      return (
+        (p.traitTags.has('comeback') ? 3 : 0) +
+        (p.stats.spe >= 110
+          ? (p.stats.spe - 105) / 6 + (p.maxPower >= 140 ? p.maxPower / 90 : 0)
+          : 0)
+      );
+    default:
+      return 0;
+  }
+}
+
+/** 六个角色各派一只；先把最贴合的那只填给每个角色，保证每个标签都不是空话。 */
+function assignRoles(team: Profile[]): Map<string, RoleName> {
+  const assigned = new Map<string, RoleName>();
+  const taken = new Set<string>();
+  for (const role of ROLE_ORDER) {
+    const best = [...team]
+      .filter((p) => !taken.has(p.id))
+      .map((p) => ({ p, fit: roleFit(p, role) }))
+      .sort((a, b) => b.fit - a.fit || b.p.total - a.p.total)[0];
+    // 贴合度太低就不硬派：宁可这个角色缺席（会被判为不合格），也不写一句空话
+    if (!best || best.fit < 0.8) continue;
+    assigned.set(best.p.id, role);
+    taken.add(best.p.id);
+  }
+  return assigned;
+}
+
+/** 展示用的最优分工：6! = 720 种排法里取「贴合度总和」最高的一种，避免核心输出把唯一的坦克抢走 */
+function bestAssignment(team: Profile[]): Map<string, RoleName> {
+  const ids = team.map((p) => p.id);
+  const fit = team.map((p) => ROLE_ORDER.map((role) => Math.max(0, roleFit(p, role))));
+  let bestScore = -Infinity;
+  let best: number[] | null = null;
+  const order = [0, 1, 2, 3, 4, 5];
+  const perm = (arr: number[], start: number) => {
+    if (start === arr.length) {
+      let score = 0;
+      for (let i = 0; i < arr.length; i += 1) {
+        const f = fit[i][arr[i]];
+        // 贴合度为 0 的角色等于空话，重罚
+        score += f > 0.8 ? f : -50;
+      }
+      if (score > bestScore) {
+        bestScore = score;
+        best = [...arr];
+      }
+      return;
+    }
+    for (let i = start; i < arr.length; i += 1) {
+      [arr[start], arr[i]] = [arr[i], arr[start]];
+      perm(arr, start + 1);
+      [arr[start], arr[i]] = [arr[i], arr[start]];
+    }
+  };
+  perm(order, 0);
+  const assigned = new Map<string, RoleName>();
+  if (!best) return assigned;
+  for (let i = 0; i < ids.length; i += 1) assigned.set(ids[i], ROLE_ORDER[best[i]]);
+  return assigned;
+}
+
+function missingRoles(team: Profile[]): number {
+  const used = new Set(assignRoles(team).values());
+  return ROLE_ORDER.filter((role) => !used.has(role)).length;
+}
+
+/* ------------------------------------------------------------------ 战术原型 */
+
+interface Arch {
+  id: string;
+  label: string;
+  short: string;
+  category: TeamCategory;
+  tagline: string;
+  pool: (p: Profile) => boolean;
+  weight: (p: Profile) => number;
+  score: (e: Eval, team: Profile[]) => number;
+  violations: (team: Profile[], e: Eval) => number;
+  valid: (team: Profile[], e: Eval) => boolean;
+  restarts?: number;
+  /** 必须包含的成员（天气手等），由本轮种子决定 */
+  preselect?: (rand: () => number) => Profile[];
+  /** 本轮专属数据：天气名、纯属性系别 */
+  monoType?: string;
+  weather?: string;
+  /** 至少几种属性 */
+  minDistinctTypes?: number;
+}
+
+const traitWeight = (p: Profile, tags: string[], w: number) =>
+  tags.reduce((acc, t) => acc + (p.traitTags.has(t) ? w : 0), 0);
+const skillWeight = (p: Profile, tags: string[], w: number) =>
+  tags.reduce((acc, t) => acc + (p.skillTags.has(t) ? w : 0), 0);
+
+const roleArmor = (team: Profile[]) => (missingRoles(team) === 0 ? 0 : missingRoles(team));
+
+const BASE_ARCHETYPES: Arch[] = [
+  {
+    id: 'rush',
+    label: '高速爆发',
+    short: '高速队',
+    category: 'rush',
+    tagline: '速度压制 · 先手爆发',
+    pool: (p) => p.stats.spe >= 108 && p.maxPower >= 110,
+    weight: (p) =>
+      Math.max(0, p.stats.spe - 95) * 1.6 +
+      p.maxPower * 0.55 +
+      (p.prioritySkills.length ? 14 : 0) +
+      p.total / 24,
+    score: (e) =>
+      e.fastCount * 12 +
+      (e.fastest?.spe ?? 0) * 0.6 +
+      e.coverage * 1.6 -
+      e.sharedWeakCount * 7 +
+      (e.coveredSpots / Math.max(1, e.weakSpots)) * 24 +
+      e.avgTotal / 12,
+    violations: (team, e) =>
+      (team.filter((p) => p.stats.spe >= 120).length >= 3 ? 0 : 1) +
+      (e.avgTopPower >= 125 ? 0 : 1) +
+      (e.coverage >= 12 ? 0 : 1) +
+      (e.sharedWeakCount <= 4 ? 0 : 1) +
+      roleArmor(team),
+    valid: (team, e) =>
+      team.filter((p) => p.stats.spe >= 120).length >= 3 &&
+      e.avgTopPower >= 125 &&
+      e.coverage >= 12 &&
+      e.sharedWeakCount <= 4 &&
+      missingRoles(team) === 0,
+    restarts: 10,
+  },
+  {
+    id: 'nuke',
+    label: '重炮强攻',
+    short: '重炮队',
+    category: 'nuke',
+    tagline: '高威力单发 · 正面换血',
+    pool: (p) => p.maxPower >= 150,
+    weight: (p) => p.maxPower * 1.1 + p.mainAtk * 0.6 + p.total / 26 + Math.max(0, p.bulk - 280) / 16,
+    score: (e) =>
+      e.avgTopPower * 2.2 +
+      e.avgTotal / 8 +
+      e.coverage * 1.6 -
+      e.sharedWeakCount * 7 +
+      (e.coveredSpots / Math.max(1, e.weakSpots)) * 18,
+    violations: (team, e) =>
+      (team.filter((p) => p.maxPower >= 160).length >= 3 ? 0 : 1) +
+      (e.avgTotal >= 550 ? 0 : 1) +
+      (e.coverage >= 12 ? 0 : 1) +
+      (e.avgTopPower >= 150 ? 0 : 1) +
+      (e.sharedWeakCount <= 4 ? 0 : 1) +
+      roleArmor(team),
+    valid: (team, e) =>
+      team.filter((p) => p.maxPower >= 160).length >= 3 &&
+      e.avgTotal >= 550 &&
+      e.coverage >= 12 &&
+      e.avgTopPower >= 150 &&
+      e.sharedWeakCount <= 4 &&
+      missingRoles(team) === 0,
+    restarts: 10,
+  },
+  {
+    id: 'wall',
+    label: '联防反击',
+    short: '联防队',
+    category: 'wall',
+    tagline: '弱点互补 · 换人反击',
+    pool: (p) => p.bulk >= 280,
+    weight: (p) =>
+      p.bulk / 10 +
+      (p.traitTags.has('comeback') ? 22 : 0) +
+      p.coverage * 2 +
+      p.total / 28,
+    score: (e) =>
+      (e.coveredSpots / Math.max(1, e.weakSpots)) * 55 -
+      e.sharedWeakCount * 9 +
+      e.avgBulk / 6 +
+      e.coverage * 2.2 +
+      e.avgTotal / 14,
+    violations: (team, e) =>
+      (e.coveredSpots === e.weakSpots ? 0 : 1) +
+      (e.sharedWeakCount <= 2 ? 0 : 1) +
+      (e.coverage >= 13 ? 0 : 1) +
+      (team.filter((p) => p.bulk >= 330).length >= 2 ? 0 : 1) +
+      (team.filter((p) => p.traitTags.has('comeback')).length >= 1 ? 0 : 1) +
+      roleArmor(team),
+    valid: (team, e) =>
+      e.coveredSpots === e.weakSpots &&
+      e.sharedWeakCount <= 2 &&
+      e.coverage >= 13 &&
+      team.filter((p) => p.bulk >= 330).length >= 2 &&
+      team.filter((p) => p.traitTags.has('comeback')).length >= 1 &&
+      missingRoles(team) === 0,
+    restarts: 12,
+  },
+  {
+    id: 'cover18',
+    label: '跨属性互补',
+    short: '十八系互补队',
+    category: 'mixed',
+    tagline: '18 系打击面 · 弱点互接',
+    pool: (p) => p.coverage >= 8,
+    weight: (p) => p.coverage * 3 + p.total / 24 + p.maxPower * 0.2,
+    score: (e) =>
+      e.coverage * 16 -
+      e.sharedWeakCount * 10 +
+      (e.coveredSpots / Math.max(1, e.weakSpots)) * 30 +
+      (e.allCovered ? 20 : 0) +
+      e.distinctTypes * 3 +
+      e.avgTotal / 20,
+    violations: (team, e) =>
+      (e.coverage >= 17 ? 0 : 1) +
+      (e.sharedWeakCount <= 2 ? 0 : 1) +
+      (e.coveredSpots === e.weakSpots ? 0 : 1) +
+      (e.distinctTypes >= 6 ? 0 : 1) +
+      roleArmor(team),
+    valid: (team, e) =>
+      e.coverage >= 17 &&
+      e.sharedWeakCount <= 2 &&
+      e.coveredSpots === e.weakSpots &&
+      e.distinctTypes >= 6 &&
+      missingRoles(team) === 0,
+    restarts: 16,
+    minDistinctTypes: 6,
+  },
+  {
+    id: 'drain',
+    label: '抽能压制',
+    short: '抽能队',
+    category: 'tax',
+    tagline: '偷能量 · 抬能耗 · 重炮收场',
+    pool: (p) =>
+      p.traitTags.has('steal') ||
+      p.traitTags.has('tax') ||
+      p.skillTags.has('steal') ||
+      p.skillTags.has('tax') ||
+      p.maxPower >= 160,
+    weight: (p) =>
+      traitWeight(p, ['steal', 'tax'], 20) +
+      skillWeight(p, ['steal', 'tax'], 5) +
+      (p.maxPower >= 150 ? 10 : 0) +
+      Math.max(0, p.bulk - 260) / 18 +
+      p.total / 32,
+    score: (e, team) =>
+      e.tagScore * 1.3 +
+      e.coverage * 2.4 -
+      e.sharedWeakCount * 9 +
+      (e.coveredSpots / Math.max(1, e.weakSpots)) * 20 +
+      e.avgTopPower * 0.6 +
+      team.filter((p) => p.maxPower >= 150).length * 6,
+    violations: (team, e) =>
+      (team.filter((p) => p.traitTags.has('tax') || p.traitTags.has('steal')).length >= 2 ? 0 : 1) +
+      (team.filter((p) => p.maxPower >= 150).length >= 2 ? 0 : 1) +
+      (e.coverage >= 13 ? 0 : 1) +
+      (e.sharedWeakCount <= 3 ? 0 : 1) +
+      roleArmor(team),
+    valid: (team, e) =>
+      team.filter((p) => p.traitTags.has('tax') || p.traitTags.has('steal')).length >= 2 &&
+      team.filter((p) => p.maxPower >= 150).length >= 2 &&
+      e.coverage >= 13 &&
+      e.sharedWeakCount <= 3 &&
+      missingRoles(team) === 0,
+    restarts: 12,
+  },
+  {
+    id: 'leech',
+    label: '吸血续航',
+    short: '吸血队',
+    category: 'sustain',
+    tagline: '伤害换血 · 越打越厚',
+    pool: (p) =>
+      p.traitTags.has('leech') ||
+      p.traitTags.has('sustain') ||
+      p.traitTags.has('comeback') ||
+      p.skillTags.has('leech'),
+    weight: (p) =>
+      traitWeight(p, ['leech'], 22) +
+      traitWeight(p, ['sustain', 'comeback'], 11) +
+      skillWeight(p, ['leech'], 5) +
+      Math.max(0, p.bulk - 280) / 14 +
+      p.total / 30,
+    score: (e, team) =>
+      e.tagScore * 1.2 +
+      e.avgBulk / 5 +
+      e.coverage * 2.6 -
+      e.sharedWeakCount * 8 +
+      (e.coveredSpots / Math.max(1, e.weakSpots)) * 26 +
+      team.filter((p) => p.traitTags.has('comeback')).length * 4,
+    violations: (team, e) =>
+      (team.filter((p) => p.traitTags.has('leech') || p.skillTags.has('leech')).length >= 3 ? 0 : 1) +
+      (team.filter((p) => p.traitTags.has('comeback') || p.traitTags.has('sustain')).length >= 2 ? 0 : 1) +
+      (e.coverage >= 12 ? 0 : 1) +
+      (e.allCovered ? 0 : 1) +
+      (e.sharedWeakCount <= 4 ? 0 : 1) +
+      roleArmor(team),
+    valid: (team, e) =>
+      team.filter((p) => p.traitTags.has('leech') || p.skillTags.has('leech')).length >= 3 &&
+      team.filter((p) => p.traitTags.has('comeback') || p.traitTags.has('sustain')).length >= 2 &&
+      e.coverage >= 12 &&
+      e.allCovered &&
+      e.sharedWeakCount <= 4 &&
+      missingRoles(team) === 0,
+    restarts: 14,
+  },
+  {
+    id: 'status',
+    label: '状态折磨',
+    short: '折磨队',
+    category: 'status',
+    tagline: '灼烧 / 中毒 / 冻结叠层',
+    pool: (p) => STATUS_TAGS.some((t) => p.traitTags.has(t) || p.skillTags.has(t)),
+    weight: (p) =>
+      STATUS_TAGS.reduce(
+        (acc, t) => acc + (p.traitTags.has(t) ? 18 : 0) + (p.skillTags.has(t) ? 4 : 0),
+        0,
+      ) +
+      Math.max(0, p.bulk - 260) / 20 +
+      p.total / 34,
+    score: (e, team) =>
+      e.tagScore * 0.9 +
+      e.coverage * 2.4 -
+      e.sharedWeakCount * 8 +
+      (e.coveredSpots / Math.max(1, e.weakSpots)) * 22 +
+      team.filter((p) => STATUS_TAGS.some((t) => p.traitTags.has(t))).length * 8,
+    violations: (team, e) =>
+      (team.filter((p) => STATUS_TAGS.some((t) => p.traitTags.has(t))).length >= 2 ? 0 : 1) +
+      (team.filter((p) => STATUS_TAGS.some((t) => p.tags.has(t))).length >= 4 ? 0 : 1) +
+      (e.coverage >= 12 ? 0 : 1) +
+      (e.sharedWeakCount <= 3 ? 0 : 1) +
+      roleArmor(team),
+    valid: (team, e) =>
+      team.filter((p) => STATUS_TAGS.some((t) => p.traitTags.has(t))).length >= 2 &&
+      team.filter((p) => STATUS_TAGS.some((t) => p.tags.has(t))).length >= 4 &&
+      e.coverage >= 12 &&
+      e.sharedWeakCount <= 3 &&
+      missingRoles(team) === 0,
+    restarts: 12,
+  },
+  {
+    id: 'punish',
+    label: '换人惩罚',
+    short: '追击队',
+    category: 'punish',
+    tagline: '追击换人 · 越换越亏',
+    pool: (p) => p.traitTags.has('switch') || p.skillTags.has('switch'),
+    weight: (p) =>
+      (p.traitTags.has('switch') ? 26 : 0) +
+      skillWeight(p, ['switch'], 6) +
+      p.maxPower * 0.4 +
+      Math.max(0, p.bulk - 280) / 20 +
+      p.total / 34,
+    score: (e, team) =>
+      e.tagScore * 1.1 +
+      e.coverage * 2.4 -
+      e.sharedWeakCount * 8 +
+      (e.coveredSpots / Math.max(1, e.weakSpots)) * 20 +
+      team.filter((p) => p.maxPower >= 140).length * 5,
+    violations: (team, e) =>
+      (team.filter((p) => p.traitTags.has('switch')).length >= 2 ? 0 : 1) +
+      (team.filter((p) => p.maxPower >= 140).length >= 2 ? 0 : 1) +
+      (e.coverage >= 12 ? 0 : 1) +
+      (e.sharedWeakCount <= 3 ? 0 : 1) +
+      roleArmor(team),
+    valid: (team, e) =>
+      team.filter((p) => p.traitTags.has('switch')).length >= 2 &&
+      team.filter((p) => p.maxPower >= 140).length >= 2 &&
+      e.coverage >= 12 &&
+      e.sharedWeakCount <= 3 &&
+      missingRoles(team) === 0,
+    restarts: 12,
+  },
+];
+
+/* ------------------------------------------------------------------ 天气 / 纯属性（每轮参数不同） */
+
+const WEATHERS = ['雨天', '暴风雪', '沙暴', '雷鸣'] as const;
+const WEATHER_TYPE: Record<string, string> = {
+  雨天: '水',
+  暴风雪: '冰',
+  沙暴: '地',
+  雷鸣: '电',
+};
+
+function weatherSetterSkills(p: Profile, weather: string): ResolvedSkill[] {
+  return skillsOf(p.spirit).filter((sk) => (sk.effect ?? '').includes(`将天气改为${weather}`));
+}
+
+function weatherArchetype(weather: string, rand: () => number): Arch {
+  const type = WEATHER_TYPE[weather];
+  const setters = PROFILES.filter((p) => weatherSetterSkills(p, weather).length > 0);
+  const synergy = (p: Profile) => (p.traitText ?? '').includes(weather);
+  return {
+    id: 'weather',
+    label: `天气联动·${weather}`,
+    short: `${weather}队`,
+    category: 'weather',
+    tagline: `${weather} · ${type}系联动`,
+    weather,
+    pool: (p) => weatherSetterSkills(p, weather).length > 0 || synergy(p) || p.types.includes(type),
+    weight: (p) =>
+      (weatherSetterSkills(p, weather).length ? 90 : 0) +
+      (synergy(p) ? 40 : 0) +
+      (p.types.includes(type) ? 14 : 0) +
+      p.maxPower * 0.2 +
+      p.total / 30,
+    score: (e, team) =>
+      team.filter((p) => synergy(p)).length * 14 +
+      e.coverage * 2.4 -
+      e.sharedWeakCount * 7 +
+      (e.coveredSpots / Math.max(1, e.weakSpots)) * 18 +
+      e.avgTotal / 18,
+    violations: (team, e) =>
+      (team.some((p) => weatherSetterSkills(p, weather).length > 0) ? 0 : 1) +
+      (team.filter((p) => synergy(p)).length >= 2 ? 0 : 1) +
+      (team.filter((p) => p.types.includes(type)).length >= 2 ? 0 : 1) +
+      (e.coverage >= 12 ? 0 : 1) +
+      (e.sharedWeakCount <= 3 ? 0 : 1) +
+      roleArmor(team),
+    valid: (team, e) =>
+      team.some((p) => weatherSetterSkills(p, weather).length > 0) &&
+      team.filter((p) => synergy(p)).length >= 2 &&
+      team.filter((p) => p.types.includes(type)).length >= 2 &&
+      e.coverage >= 12 &&
+      e.sharedWeakCount <= 3 &&
+      missingRoles(team) === 0,
+    restarts: 12,
+    minDistinctTypes: 4,
+    preselect: () => {
+      const ranked = setters
+        .filter((p) => !GLOBAL_EXCLUDE.has(p.name))
+        .map((p) => ({ p, w: p.total + p.maxPower + (synergy(p) ? 120 : 0) }))
+        .sort((a, b) => b.w - a.w)
+        .slice(0, 8);
+      if (!ranked.length) return [];
+      return [ranked[Math.floor(rand() * ranked.length)].p];
+    },
+  };
+}
+
+function monoArchetype(type: string): Arch {
+  return {
+    id: 'mono',
+    label: `纯${type}系强攻`,
+    short: `${type}系强攻队`,
+    category: 'mono',
+    tagline: `${type}系本系加成 · 单系压制`,
+    monoType: type,
+    pool: (p) => p.types.includes(type) && p.maxPower >= 120,
+    weight: (p) => {
+      const stab = skillsOf(p.spirit)
+        .filter((sk) => sk.type === type && isDamaging(sk))
+        .reduce((m, sk) => Math.max(m, sk.power ?? 0), 0);
+      return stab * 0.8 + p.mainAtk * 0.3 + p.total / 26 + Math.max(0, p.bulk - 280) / 20;
+    },
+    score: (e, team) =>
+      e.avgTopPower * 1.2 +
+      e.coverage * 2.2 -
+      e.sharedWeakCount * 6 +
+      (e.coveredSpots / Math.max(1, e.weakSpots)) * 16 +
+      e.avgTotal / 10 +
+      team.filter((p) => p.types.length === 1).length * 3,
+    violations: (team, e) =>
+      (team.every((p) => p.types.includes(type)) ? 0 : 1) +
+      (e.coverage >= 10 ? 0 : 1) +
+      (e.avgTopPower >= 125 ? 0 : 1) +
+      (e.coveredSpots >= Math.ceil(e.weakSpots * 0.45) ? 0 : 1) +
+      roleArmor(team),
+    valid: (team, e) =>
+      team.every((p) => p.types.includes(type)) &&
+      e.coverage >= 10 &&
+      e.avgTopPower >= 125 &&
+      e.coveredSpots >= Math.ceil(e.weakSpots * 0.45) &&
+      missingRoles(team) === 0,
+    restarts: 12,
+    minDistinctTypes: 3,
+  };
+}
+
+function monoCandidates(rand: () => number): string[] {
+  const counts = new Map<string, number>();
+  for (const p of PROFILES) {
+    if (p.maxPower < 120) continue;
+    for (const t of new Set(p.types)) counts.set(t, (counts.get(t) ?? 0) + 1);
+  }
+  const types = [...counts.entries()]
+    .filter(([, n]) => n >= 12)
+    .map(([t]) => t)
+    .sort((a, b) => a.localeCompare(b, 'zh-Hans-CN'));
+  // 用种子洗一遍，让每轮的纯系不同
+  for (let i = types.length - 1; i > 0; i -= 1) {
+    const j = Math.floor(rand() * (i + 1));
+    [types[i], types[j]] = [types[j], types[i]];
+  }
+  return types;
+}
+
+/* ------------------------------------------------------------------ 搜索 */
+
+interface Candidate {
+  team: Profile[];
+  e: Eval;
+  score: number;
+  bannedHits: number;
+}
+
+function shapeOk(team: Profile[], arch: Arch): boolean {
+  if (team.length !== 6) return false;
+  if (new Set(team.map((p) => p.base)).size !== 6) return false;
+  if (arch.monoType) return team.every((p) => p.types.includes(arch.monoType));
+  const allTypes = new Set(team.flatMap((p) => p.types));
+  if (allTypes.size < (arch.minDistinctTypes ?? 5)) return false;
+  const primary = new Map<string, number>();
+  for (const p of team) primary.set(p.types[0], (primary.get(p.types[0]) ?? 0) + 1);
+  if ([...primary.values()].some((n) => n >= 3)) return false;
+  return true;
+}
+
+/** 全队质量底线：单一属性最多克制 4 只（纯属性队天然共享弱点，不适用） */
+function weakStructureOk(e: Eval, arch: Arch): boolean {
+  return Boolean(arch.monoType) || e.worstWeakCount <= 4;
+}
+
+function scoreOf(arch: Arch, team: Profile[], e: Eval, banned: Set<string>): number {
+  const v = arch.violations(team, e);
+  const shape = shapeOk(team, arch);
+  const bannedHits = team.filter((p) => banned.has(p.base)).length;
+  return (
+    arch.score(e, team) -
+    v * 400 -
+    (shape ? 0 : 1e5) -
+    (weakStructureOk(e, arch) ? 0 : 600) -
+    bannedHits * 55
+  );
+}
+
+function search(
+  arch: Arch,
+  banned: Set<string>,
+  used: Set<string>,
+  rand: () => number,
+  allowBanned: boolean,
+): Candidate[] {
+  const candidatesPool = PROFILES.filter(
+    (p) =>
+      !used.has(p.base) &&
+      !GLOBAL_EXCLUDE.has(p.name) &&
+      arch.pool(p) &&
+      (allowBanned || !banned.has(p.base)),
+  );
+  if (candidatesPool.length < 6) return [];
+
+  const jitter = new Map<string, number>();
+  for (const p of candidatesPool) jitter.set(p.id, 0.84 + rand() * 0.32);
+  const weightOf = (p: Profile) => arch.weight(p) * (jitter.get(p.id) ?? 1);
+
+  // 爬山阶段只看权重前 200 只，控制搜索时间；预选成员永远保留
+  const rawPreselect = arch.preselect ? arch.preselect(rand) : [];
+  const preselected = rawPreselect.filter(
+    (p) =>
+      !used.has(p.base) && !GLOBAL_EXCLUDE.has(p.name) && arch.pool(p) && (allowBanned || !banned.has(p.base)),
+  );
+  const topPool = [...candidatesPool].sort((a, b) => weightOf(b) - weightOf(a)).slice(0, 200);
+  const hillPool = topPool.concat(preselected.filter((p) => !topPool.some((t) => t.id === p.id)));
+
+  const results: Candidate[] = [];
+  const seen = new Set<string>();
+  const restarts = arch.restarts ?? 10;
+
+  for (let r = 0; r < restarts; r += 1) {
+    const team: Profile[] = [...preselected].slice(0, 2);
+    const inTeam = new Set(team.map((p) => p.base));
+
+    while (team.length < 6) {
+      let best: Profile | null = null;
+      let bestScore = -Infinity;
+      let teamMask = 0;
+      const teamTypes = new Set<string>();
+      const teamRoles = new Set<RoleName>();
+      const primaryCount = new Map<string, number>();
+      for (const p of team) {
+        teamMask |= p.coverage;
+        for (const t of p.types) teamTypes.add(t);
+        primaryCount.set(p.types[0], (primaryCount.get(p.types[0]) ?? 0) + 1);
+        for (const role of ROLE_ORDER) if (roleFit(p, role) > 0.8) teamRoles.add(role);
+      }
+      for (const p of candidatesPool) {
+        if (inTeam.has(p.base)) continue;
+        const covers = popcount(teamMask | p.coverage) - popcount(teamMask);
+        let newTypes = 0;
+        for (const t of p.types) if (!teamTypes.has(t)) newTypes += 1;
+        let newRoles = 0;
+        for (const role of ROLE_ORDER) if (roleFit(p, role) > 0.8 && !teamRoles.has(role)) newRoles += 1;
+        const primaryLimit = arch.monoType ? 99 : 2;
+        const sameType = primaryCount.get(p.types[0]) ?? 0;
+        const s =
+          weightOf(p) +
+          covers * 26 +
+          newTypes * 10 +
+          newRoles * 20 +
+          (p.maxPower >= 140 ? 8 : 0) -
+          (banned.has(p.base) ? 60 : 0) -
+          (sameType >= primaryLimit ? 80 : 0) +
+          ((jitter.get(p.id) ?? 1) - 1) * 24;
+        if (s > bestScore) {
+          bestScore = s;
+          best = p;
+        }
+      }
+      if (!best) break;
+      team.push(best);
+      inTeam.add(best.base);
+    }
+    if (team.length < 6) continue;
+
+    let current = [...team];
+    let e = evaluate(current, weightOf);
+    let score = scoreOf(arch, current, e, banned);
+
+    for (let pass = 0; pass < 5; pass += 1) {
+      let improved = false;
+      for (let slot = 0; slot < 6; slot += 1) {
+        if (preselected.some((p) => p.base === current[slot].base)) continue;
+        let bestSwap: Profile | null = null;
+        let bestScore = score;
+        let bestEval = e;
+        for (const p of hillPool) {
+          if (current.some((m) => m.base === p.base)) continue;
+          const trial = current.map((m, i) => (i === slot ? p : m));
+          if (!shapeOk(trial, arch)) continue;
+          const te = evaluate(trial, weightOf);
+          const s = scoreOf(arch, trial, te, banned);
+          if (s > bestScore) {
+            bestScore = s;
+            bestSwap = p;
+            bestEval = te;
+          }
+        }
+        if (bestSwap) {
+          current = current.map((m, i) => (i === slot ? bestSwap! : m));
+          score = bestScore;
+          e = bestEval;
+          improved = true;
+        }
+      }
+      if (!improved) break;
+    }
+
+    if (!shapeOk(current, arch)) continue;
+    const key = current
+      .map((p) => p.base)
+      .sort()
+      .join('|');
+    if (seen.has(key)) continue;
+    seen.add(key);
+    results.push({
+      team: current,
+      e,
+      score: Math.round(score * 10) / 10,
+      bannedHits: current.filter((p) => banned.has(p.base)).length,
+    });
+  }
+
+  results.sort((a, b) => b.score - a.score);
+  return results;
+}
+
+/* ------------------------------------------------------------------ 文案生成 */
+
+function pickSkills(p: Profile): { refs: PresetSkillRef[]; primary: ResolvedSkill | null } {
+  const all = skillsOf(p.spirit);
+  const dmg = damagers(p.spirit);
+  const stab = dmg.filter((sk) => p.types.includes(sk.type));
+  const mainCat = p.mainIsPhysical ? '物理' : '魔法';
+  const primary =
+    stab.find((sk) => sk.category === mainCat) ??
+    stab[0] ??
+    dmg.find((sk) => sk.category === mainCat) ??
+    dmg[0] ??
+    null;
+
+  const chosen: ResolvedSkill[] = [];
+  const refs: PresetSkillRef[] = [];
+  if (primary) {
+    chosen.push(primary);
+    const isStab = p.types.includes(primary.type);
+    refs.push({
+      name: primary.name,
+      why: `${isStab ? '本系' : ''}${primary.category}最高威力 ${primary.power}${primary.energy ? `，能耗 ${primary.energy}` : ''}`,
+    });
+  }
+
+  // 第二招：补打击面 —— 找能对主招打不动/打不痛的防守属性打出 2 倍的技能
+  let secondary: ResolvedSkill | null = null;
+  if (primary) {
+    const primaryType = primary.type;
+    const weakAgainst = TYPE_ORDER.filter((t) => matchup(primaryType, [t]).multiplier <= 1);
+    const scored = dmg
+      .filter((sk) => sk.name !== primary.name && sk.type !== primaryType)
+      .map((sk) => ({
+        sk,
+        hits: weakAgainst.filter((t) => matchup(sk.type, [t]).multiplier >= 2),
+      }))
+      .filter((x) => x.hits.length > 0)
+      .sort((a, b) => b.hits.length - a.hits.length || (b.sk.power ?? 0) - (a.sk.power ?? 0));
+    secondary = scored[0]?.sk ?? null;
+    if (secondary) {
+      chosen.push(secondary);
+      const hits = TYPE_ORDER.filter((t) => matchup(secondary!.type, [t]).multiplier >= 2);
+      refs.push({
+        name: secondary.name,
+        why: `对 ${joinNames(hits.slice(0, 3))} 打出 ×2（主招对这些属性最多 ×1）`,
+      });
+    }
+  }
+
+  // 第三招：机制/变化技能优先，其次第三个不同属性输出
+  const usedNames = new Set(chosen.map((sk) => sk.name));
+  const mechanic = [...all]
+    .filter((sk) => !usedNames.has(sk.name) && !isDamaging(sk) && /回复|减伤|护盾|提升|降低|异常|灼烧|中毒|冻结|能耗|天气|印记|换人|偷取/.test(sk.effect ?? ''))
+    .sort((a, b) => (a.energy ?? 99) - (b.energy ?? 99))[0];
+  if (mechanic) {
+    chosen.push(mechanic);
+    refs.push({ name: mechanic.name, why: `变化技能：${effectBrief(mechanic.effect)}` });
+  } else {
+    const third = dmg.find((sk) => !usedNames.has(sk.name) && sk.type !== primary?.type);
+    if (third) {
+      chosen.push(third);
+      refs.push({
+        name: third.name,
+        why: `第三个属性的输出，对 ${joinNames(
+          TYPE_ORDER.filter((t) => matchup(third!.type, [t]).multiplier >= 2).slice(0, 2),
+        )} 打出 ×2`,
+      });
+    }
+  }
+
+  // 兜底：变化技能补不进来时再塞一个可学技能，保证 2~4 个
+  if (refs.length < 2) {
+    const extra = all.find((sk) => !usedNames.has(sk.name));
+    if (extra) refs.push({ name: extra.name, why: `可学的另一个技能：${effectBrief(extra.effect) || skCategory(extra)}` });
+  }
+
+  return { refs: refs.slice(0, 4), primary };
+}
+
+function skCategory(sk: ResolvedSkill): string {
+  return `${sk.type}·${sk.category}${sk.power ? `·威力${sk.power}` : ''}`;
+}
+
+function noteForRole(
+  p: Profile,
+  role: RoleName,
+  primary: ResolvedSkill | null,
+  control: { label: string; skillName?: string } | null,
+): string {
+  const spe = p.stats.spe;
+  switch (role) {
+    case '先手':
+      return `速度 ${spe}，队里第一个上场；主招 ${primary ? `${primary.name}（威力${primary.power}）` : '无伤害技能'}。`;
+    case '核心输出':
+      return `${p.mainIsPhysical ? '物攻' : '魔攻'} ${p.mainAtk}，主招 ${primary ? `${primary.name}（威力 ${primary.power}）` : '—'}，最高威力 ${p.maxPower}（${p.maxPowerSkill?.name ?? '—'}），总种族值 ${p.total}。`;
+    case '承伤':
+      return p.bulk < 290
+        ? `生命 ${p.stats.hp}／物防 ${p.stats.def}／魔防 ${p.stats.spd}，是这队里最厚的一只；对上克制招也撑不住，只能先手换掉。`
+        : `生命 ${p.stats.hp}／物防 ${p.stats.def}／魔防 ${p.stats.spd}，负责吃一轮伤害再换人。`;
+    case '控制':
+      if (control?.label && p.traitTags.size && control.label === '特性') {
+        return `特性「${p.spirit.trait?.name ?? '—'}」：${effectBrief(p.spirit.trait?.effect)}`;
+      }
+      return control?.skillName
+        ? `用「${control.skillName}」形成压制：${effectBrief(
+            p.keySkills.find((sk) => sk.name === control.skillName)?.effect,
+          )}`
+        : `特性「${p.spirit.trait?.name ?? '—'}」：${effectBrief(p.spirit.trait?.effect)}`;
+    case '辅助': {
+      const supportTrait = p.traitTags.has('sustain') || p.traitTags.has('leech') ||
+        /回复|减伤|护盾|提升|清除|免疫|治疗/.test(p.spirit.trait?.effect ?? '');
+      if (supportTrait) return `辅助位，特性「${p.spirit.trait?.name ?? '—'}」：${effectBrief(p.spirit.trait?.effect)}`;
+      const sk =
+        p.supportSkills.find((x) => /回复[^。；]{0,6}生命|护盾|免疫|清除/.test(x.effect ?? '')) ??
+        p.supportSkills.find((x) => /提升|威力\+|双攻\+/.test(x.effect ?? '')) ??
+        p.supportSkills.find((x) => /减伤/.test(x.effect ?? '')) ??
+        p.supportSkills[0];
+      return sk
+        ? `辅助位，可学「${sk.name}」：${effectBrief(sk.effect)}`
+        : `辅助位，特性「${p.spirit.trait?.name ?? '—'}」：${effectBrief(p.spirit.trait?.effect)}`;
+    }
+    case '收割':
+      return p.traitTags.has('comeback')
+        ? `速度 ${spe}；特性「${p.spirit.trait?.name}」：${effectBrief(p.spirit.trait?.effect)}`
+        : `速度 ${spe}，主招 ${primary ? `${primary.name}（威力 ${primary.power}）` : '—'}，负责收残。`;
+    default:
+      return '';
+  }
+}
+
+function chainText(p: Profile, primary: ResolvedSkill | null, teamHasWeather: boolean): string {
+  const trait = p.spirit.trait;
+  const traitPart = trait ? `「${trait.name}」${trait.effect}` : '图鉴未提供特性。';
+  const skillPart = primary ? `关键技能${skillTag(primary)}：${effectBrief(primary.effect, 70) || '图鉴未提供效果文本。'}` : '';
+  // 特性依赖天气、但本队没有开天气的手段时，照实提醒，不假装联动成立
+  const weatherNote =
+    !teamHasWeather && /天气为|天气时|晴天|雨天|暴风雪|沙暴|雷鸣/.test(trait?.effect ?? '')
+      ? '（本队没有开天气的技能，这条只在天气自然出现时生效。）'
+      : '';
+  return `${traitPart}${skillPart}${weatherNote}`;
+}
+
+/** 一个队伍的完整文案：每个数字都是现算的，每句机制都能在图鉴原文里找到 */
+function buildTeam(
+  arch: Arch,
+  cand: Candidate,
+  round: number,
+  banned: Set<string>,
+): { preset: TeamPreset; e: Eval } {
+  const team = cand.team;
+  const e = cand.e;
+  const roles = bestAssignment(team);
+  const ordered = [...team].sort(
+    (a, b) => CHAIN_ORDER.indexOf(roles.get(a.id) ?? '收割') - CHAIN_ORDER.indexOf(roles.get(b.id) ?? '收割'),
+  );
+
+  // 文案里的「核心 / 先手 / 承伤 / 收割」必须和卡片上那个角色徽章是同一个人
+  const byRole = (role: RoleName) => team.find((p) => roles.get(p.id) === role) ?? null;
+  const heaviest = [...team].sort((a, b) => b.maxPower * b.mainAtk - a.maxPower * a.mainAtk)[0];
+  const core = byRole('核心输出') ?? heaviest;
+  const lead = byRole('先手') ?? [...team].sort((a, b) => b.stats.spe - a.stats.spe)[0];
+  const tank = byRole('承伤') ?? [...team].sort((a, b) => b.bulk - a.bulk)[0];
+  const closer = byRole('收割') ?? core;
+
+  // 队名里的属性前缀只在「至少 3 只带这个系」时才用，避免一两只就挂上整套名字
+  const domType = (() => {
+    const counts = new Map<string, number>();
+    for (const p of team) for (const t of new Set(p.types)) counts.set(t, (counts.get(t) ?? 0) + 1);
+    const sorted = [...counts.entries()].sort((a, b) => b[1] - a[1]);
+    return sorted.length && sorted[0][1] >= 3 ? sorted[0][0] : null;
+  })();
+
+  const name =
+    arch.weather
+      ? `${arch.weather}队`
+      : arch.monoType
+        ? `${arch.monoType}系强攻队`
+        : arch.id === 'cover18'
+          ? '十八系互补队'
+          : domType
+            ? `${domType}系${arch.short}`
+            : arch.short;
+
+  const skillPicks = new Map<string, { refs: PresetSkillRef[]; primary: ResolvedSkill | null }>();
+  for (const p of ordered) skillPicks.set(p.id, pickSkills(p));
+
+  const members: PresetMember[] = ordered.map((p) => {
+    const role = roles.get(p.id) ?? '收割';
+    const pick = skillPicks.get(p.id)!;
+    const controlTag = CONTROL_TAGS.find((t) => p.traitTags.has(t));
+    const controlSkill =
+      p.keySkills.find((sk) =>
+        CONTROL_TAGS.some((tag) => MECH.find((m) => m.tag === tag)!.test.test(sk.effect ?? '')),
+      ) ??
+      skillsOf(p.spirit).find((sk) =>
+        CONTROL_TAGS.some((tag) => MECH.find((m) => m.tag === tag)!.test.test(sk.effect ?? '')),
+      );
+    const control = controlTag
+      ? { label: '特性', skillName: p.spirit.trait?.name }
+      : controlSkill
+        ? { label: MECH_LABEL.get('tax') ?? '控制', skillName: controlSkill.name }
+        : null;
+    return {
+      spiritId: p.id,
+      role,
+      note: noteForRole(p, role, pick.primary, control),
+      skills: pick.refs,
+    };
+  });
+
+  // 同一种族的两只可能带着同一特性与同一主招：重复时换第二个技能，六步读下来才不重复
+  const teamHasWeather = team.some((p) =>
+    skillsOf(p.spirit).some((sk) => /将天气改为/.test(sk.effect ?? '')),
+  );
+  const chainSeen = new Set<string>();
+  const chain: ChainStep[] = ordered.map((p) => {
+    const pick = skillPicks.get(p.id)!;
+    let skill = pick.primary;
+    if (skill && chainSeen.has(skill.name)) {
+      const alt = pick.refs.find((r) => !chainSeen.has(r.name));
+      const altSkill = alt ? skillsOf(p.spirit).find((sk) => sk.name === alt.name) ?? null : null;
+      if (altSkill) skill = altSkill;
+    }
+    if (skill) chainSeen.add(skill.name);
+    return { spiritId: p.id, skillName: skill?.name, text: chainText(p, skill, teamHasWeather) };
+  });
+
+  const weatherSetter = arch.weather
+    ? team.find((p) => weatherSetterSkills(p, arch.weather!).length > 0)
+    : null;
+  const weatherSkill = weatherSetter && arch.weather ? weatherSetterSkills(weatherSetter.spirit, arch.weather)[0] : null;
+  const synergyMembers = arch.weather ? team.filter((p) => p.traitText.includes(arch.weather!)) : [];
+
+  const statusCarriers = team.filter((p) => STATUS_TAGS.some((t) => p.traitTags.has(t)));
+  const controlCarriers = team.filter((p) => p.traitTags.has('tax') || p.traitTags.has('steal'));
+  const controlAny = team.filter((p) => controlScore(p) >= 2);
+  const supportCarriers = team.filter((p) => supportScore(p) >= 1.6);
+  const comebackCarriers = team.filter((p) => p.traitTags.has('comeback'));
+  const switchCarriers = team.filter((p) => p.traitTags.has('switch'));
+  const heavyCarriers = team.filter((p) => p.maxPower >= 150);
+
+  const highlight: string = (() => {
+    switch (arch.id) {
+      case 'rush':
+        return `全队 ${
+          e.fastCount >= 4 ? `${e.fastCount} 只速度 ≥120` : `有 ${e.fastCount} 只速度 ≥120`
+        }（最快 ${shortName(e.fastest?.name ?? '')} ${e.fastest?.spe}），先把出手顺序压在自己这边。`;
+      case 'nuke':
+        return `六只最高单发平均 ${e.avgTopPower}，${shortName(heaviest.name)}的「${heaviest.maxPowerSkill?.name}」是全队最重的一发（威力 ${heaviest.maxPower}）。`;
+      case 'wall':
+        return `六只合计 ${e.weakSpots} 个弱点，其中 ${e.coveredSpots} 个有队友以 ≤0.5 倍接住${e.allCovered ? '（全覆盖）' : ''}。`;
+      case 'cover18':
+        return `18 系里能打出 ≥2 倍伤害的有 ${e.coverage} 种，共同弱点 ${e.sharedWeakCount} 个（${e.sharedWeak.map((w) => `${w.type}×${w.count}`).join('、') || '无'}）。`;
+      case 'drain':
+        return controlCarriers.length
+          ? `队里 ${controlCarriers.length} 只的特性直接抬能耗/偷能量（${joinNames(
+              controlCarriers.map((p) => `${shortName(p.name)}「${p.spirit.trait?.name ?? ''}」`),
+            )}），对手每次出手都更贵。`
+          : `队里 ${controlAny.length} 只通过技能抬能耗或偷能量，压住对手的费用。`;
+      case 'leech':
+        return `队里 ${team.filter((p) => p.traitTags.has('leech') || p.traitTags.has('sustain')).length} 只能把伤害换成血量，${comebackCarriers.length} 只带残血反打。`;
+      case 'status':
+        return `队里 ${statusCarriers.length} 只的特性直接挂灼烧/中毒/冻结层数（${joinNames(
+          statusCarriers.map((p) => `${shortName(p.name)}「${p.spirit.trait?.name ?? ''}」`),
+        )}）。`;
+      case 'weather':
+        return weatherSetter && arch.weather
+          ? `${arch.weather}由 ${shortName(weatherSetter.name)} 的「${weatherSkill?.name ?? '—'}」开出（${effectBrief(weatherSkill?.effect, 30)}），${synergyMembers.length} 只的特性明确写着${arch.weather}生效。`
+          : `${arch.weather ?? ''}联动。`;
+      case 'mono':
+        return `六只都带${arch.monoType}系，本系加成一致，能打出 ≥2 倍的属性 ${e.coverage} 种。`;
+      case 'punish':
+        return `队里 ${switchCarriers.length} 只带换人惩罚（${joinNames(switchCarriers.map((p) => shortName(p.name)))}），对手换人反而更亏。`;
+      default:
+        return '';
+    }
+  })();
+
+  const summary =
+    `第 ${round} 轮「${arch.label}」：6 只平均种族值 ${e.avgTotal}（最高 ${shortName(e.maxTotal?.name ?? '')} ${e.maxTotal?.total}），` +
+    `速度最快 ${shortName(e.fastest?.name ?? '')} ${e.fastest?.spe}，能打出 ≥2 倍伤害的属性 ${e.coverage}/18。${highlight}`;
+
+  /* ---------------------------------------------------------- 配队逻辑 */
+  const leadName = shortName(lead.name);
+  const coreName = shortName(core.name);
+  const tankName = shortName(tank.name);
+  const leadSkill = skillPicks.get(lead.id)!.primary;
+  const coreSkill = core.maxPowerSkill;
+
+  const plan: string[] = [
+    `起手：${leadName}（速度 ${lead.stats.spe}，${roles.get(lead.id) ?? '先手'}）先上场，主招「${leadSkill?.name ?? '—'}」（威力 ${leadSkill?.power ?? '—'}）。`,
+    `核心：${coreName}${core.mainIsPhysical ? '物攻' : '魔攻'} ${core.mainAtk}，主招「${skillPicks.get(core.id)!.primary?.name ?? '—'}」（${skillPicks.get(core.id)!.primary?.type ?? core.types[0]}·威力 ${
+      skillPicks.get(core.id)!.primary?.power ?? '—'
+    }·能耗 ${skillPicks.get(core.id)!.primary?.energy ?? '—'}）${
+      coreSkill && coreSkill.name !== skillPicks.get(core.id)!.primary?.name
+        ? `，最高威力「${coreSkill.name}」${core.maxPower}`
+        : ''
+    }。`,
+  ];
+
+  const answersOf = (type: string) =>
+    team.filter((p) => matchup(type, p.types).multiplier <= 0.5).map((p) => shortName(p.name));
+
+  if (arch.weather && weatherSetter && arch.weather) {
+    const rounds = /持续(\d+)回合/.exec(weatherSkill?.effect ?? '')?.[1];
+    plan.push(
+      `天气：${shortName(weatherSetter.name)}的「${weatherSkill?.name ?? '—'}」把天气改成${arch.weather}（${rounds ? `${rounds} 回合` : '回合数见技能原文'}）；${joinNames(
+        synergyMembers.map((p) => `${shortName(p.name)}「${p.spirit.trait?.name ?? ''}」`),
+      )}的特性都写着${arch.weather}在场才生效。`,
+    );
+    plan.push(
+      `轮换：天气断档时用${tankName}（生命 ${tank.stats.hp}／物防 ${tank.stats.def}）顶住一回合，等下一次开天气；${coreName}的两回合留给${shortName(closer.name)}收尾。`,
+    );
+  } else if (arch.id === 'drain') {
+    const carriers = controlCarriers.length ? controlCarriers : controlAny;
+    plan.push(
+      `抽能：${joinNames(carriers.map((p) => `${shortName(p.name)}「${p.spirit.trait?.name ?? ''}」`))}让对手付更贵的费用；${
+        heavyCarriers.length ? joinNames(heavyCarriers.map((p) => shortName(p.name))) : coreName
+      }用威力 ≥150 的技能收场。`,
+    );
+    plan.push(
+      `承伤：${tankName}生命 ${tank.stats.hp}／物防 ${tank.stats.def}／魔防 ${tank.stats.spd}，顶住一次爆发再换人。`,
+    );
+  } else if (arch.id === 'status') {
+    plan.push(
+      `叠层：${joinNames(statusCarriers.map((p) => `${shortName(p.name)}「${p.spirit.trait?.name ?? ''}」`))}的特性直接挂层数，${
+        supportCarriers.length ? `${shortName(supportCarriers[0].name)}负责续航` : '靠换人拖回合'
+      }。`,
+    );
+    plan.push(
+      `收场：${coreName}的「${coreSkill?.name ?? '—'}」（威力 ${core.maxPower}）在层数叠满后收割；${tankName}物防 ${tank.stats.def}／魔防 ${tank.stats.spd} 用来吃伤害。`,
+    );
+  } else if (arch.id === 'leech') {
+    const drainMembers = team.filter((p) => p.traitTags.has('leech') || p.traitTags.has('sustain'));
+    plan.push(
+      `续航：${joinNames(drainMembers.map((p) => `${shortName(p.name)}「${p.spirit.trait?.name ?? ''}」`))}，伤害直接换回血量，前排不用带治疗位。`,
+    );
+    plan.push(
+      `反打：${comebackCarriers.length ? joinNames(comebackCarriers.map((p) => `${shortName(p.name)}「${p.spirit.trait?.name ?? ''}」`)) : `${coreName}的「${coreSkill?.name ?? '—'}」`}，血量被压低后才开始赚。`,
+    );
+  } else if (arch.id === 'wall') {
+    plan.push(
+      `联防：${joinTypes(
+        e.sharedWeak.map((w) => `${w.type}×${w.count}`),
+      )} 是共同弱点，${e.sharedWeak
+        .map((w) => {
+          const answers = answersOf(w.type);
+          return answers.length ? `${w.type}系交给${joinNames(answers, 2)}` : `${w.type}系队里没人抗`;
+        })
+        .join('；')}。`,
+    );
+    plan.push(
+      `反击：${tankName}生命 ${tank.stats.hp}／物防 ${tank.stats.def} 先吃伤害；${coreName}用「${coreSkill?.name ?? '—'}」（威力 ${core.maxPower}）打回来。`,
+    );
+  } else if (arch.id === 'mono') {
+    plan.push(
+      `统一属性：六只都带${arch.monoType}系，本系加成写在每一只的主招上；${joinTypes(
+        e.sharedWeak.map((w) => `${w.type}×${w.count}`),
+      )} 是共同弱点。`,
+    );
+    plan.push(
+      `分工：${coreName}打正面，${leadName}抢先手，${tankName}用生命 ${tank.stats.hp}／物防 ${tank.stats.def} 顶住对拼。`,
+    );
+  } else if (arch.id === 'punish') {
+    plan.push(
+      `追击：${joinNames(switchCarriers.map((p) => `${shortName(p.name)}「${p.spirit.trait?.name ?? ''}」`))}的特性在对手换人时生效，逼对方留在场上吃完输出。`,
+    );
+    plan.push(
+      `收场：${coreName}的「${coreSkill?.name ?? '—'}」（威力 ${core.maxPower}）负责终结；${tankName}生命 ${tank.stats.hp} 顶住反扑。`,
+    );
+  } else if (arch.id === 'nuke') {
+    plan.push(
+      `重炮：六只里 ${heavyCarriers.length} 只最高单发 ≥150，最重的是${shortName(heaviest.name)}的「${heaviest.maxPowerSkill?.name ?? '—'}」威力 ${heaviest.maxPower}。`,
+    );
+    plan.push(
+      `换血：${tankName}（生命 ${tank.stats.hp}／物防 ${tank.stats.def}）吃一轮伤害，${coreName}用「${coreSkill?.name ?? '—'}」两回合完成击杀。`,
+    );
+  } else {
+    plan.push(
+      `覆盖：18 系里能打出 2 倍的有 ${e.coverage} 种（${joinTypes(e.coverageTypes)}）；共同弱点 ${joinTypes(
+        e.sharedWeak.map((w) => `${w.type}×${w.count}`),
+      )}${
+        e.sharedWeak.length && e.sharedWeak.every((w) => answersOf(w.type).length)
+          ? '，每一个都有队友以 ≤0.5 倍接住'
+          : ''
+      }。`,
+    );
+    plan.push(
+      `分工：${coreName}主输出、${leadName}抢速度、${tankName}承伤。`,
+    );
+  }
+
+  /* ---------------------------------------------------------- 优势 / 弱点 */
+  const pros: string[] = [
+    `面板：平均种族值 ${e.avgTotal}（最高 ${shortName(e.maxTotal?.name ?? '')} ${e.maxTotal?.total}），速度最快 ${
+      e.fastest?.spe ?? '—'
+    }${e.fastCount >= 2 ? `，${e.fastCount} 只速度 ≥120` : e.fastCount === 1 ? '，只有 1 只速度 ≥120' : '，全队没有 120 以上的速度'}。`,
+    `打击面：18 系里能打出 ≥2 倍的有 ${e.coverage} 种（${joinTypes(e.coverageTypes)}）；六只最高单发平均 ${e.avgTopPower}。`,
+    e.sharedResist.length
+      ? `防御：${joinNames(
+          e.sharedResist.slice(0, 3).map((r) => `${r.type}系被 ${r.count} 只抵抗`),
+        )}；${e.weakSpots} 个弱点里 ${e.coveredSpots} 个有队友以 ≤0.5 倍接住${e.allCovered ? '（全覆盖）' : ''}。`
+      : `防御：没有两个成员共抗同一属性，属性结构分散，不容易被一套打击面通吃。`,
+  ];
+
+  const riskParts: string[] = [];
+  if (e.sharedWeak.length) {
+    const worst = e.sharedWeak[0];
+    const answers = team.filter((p) => matchup(worst.type, p.types).multiplier <= 0.5).map((p) => shortName(p.name));
+    riskParts.push(
+      `共同弱点：${worst.type}系一招能克制 ${worst.count} 只（${joinNames(worst.members.map(shortName))}，最高 ×${worst.maxMul}），${
+        answers.length ? `队里 ${joinNames(answers, 2)} 能抗（≤0.5 倍）` : '队里没人抗'
+      }。`,
+    );
+    if (e.sharedWeak.length > 1) {
+      riskParts.push(
+        `其余共同弱点：${e.sharedWeak
+          .slice(1, 3)
+          .map((w) => `${w.type}×${w.count}`)
+          .join('、')}。`,
+      );
+    }
+  } else {
+    riskParts.push('没有属性可以同时克制 2 只以上，弱点不共振。');
+  }
+  if (e.weakSpots && e.coveredSpots < e.weakSpots * 0.6) {
+    riskParts.push(
+      `漏洞：全队 ${e.weakSpots} 个弱点里只有 ${e.coveredSpots} 个有队友以 ≤0.5 倍接住，剩下的只能硬吃或靠先手避开。`,
+    );
+  }
+  if (e.slowest && e.slowest.spe < 90) {
+    riskParts.push(`速度短板：${shortName(e.slowest.name)} 只有 ${e.slowest.spe}，对上 130+ 的先手队会一直后手。`);
+  }
+  if (e.avgTopEnergy >= 6) {
+    riskParts.push(`能耗偏高：六只主招平均能耗 ${e.avgTopEnergy}，能量打空后只能靠变化技能过渡。`);
+  }
+  if (arch.weather && arch.weather) {
+    riskParts.push(`天气依赖：${arch.weather}只由一只开，天气一断特性加成就同时消失，开天气那回合也等于让出一次出手。`);
+  }
+  if (banned.size && cand.bannedHits > 0) {
+    riskParts.push(`本轮与前一轮重叠 ${cand.bannedHits} 只：为了让强度不掉，保留了上一轮已经验证过的成员。`);
+  }
+
+  const preset: TeamPreset = {
+    id: `r${round}-${arch.id}`,
+    name,
+    sub: `${arch.tagline} · ${shortName(heaviest.name)}领衔`,
+    category: arch.category,
+    archetype: arch.id,
+    archetypeLabel: arch.label,
+    tags: [
+      `第 ${round} 轮`,
+      arch.label,
+      `速度 ${e.fastest?.spe ?? '—'}`,
+      `覆盖 ${e.coverage}/18`,
+      `共同弱点 ${e.sharedWeakCount}`,
+    ],
+    summary,
+    pros,
+    plan,
+    risk: riskParts.join(' '),
+    chain,
+    members,
+  };
+  return { preset, e };
+}
+
+/* ------------------------------------------------------------------ 主流程 */
+
+interface Args {
+  round: number | null;
+  ifDue: boolean;
+  dry: boolean;
+  now: Date;
+  seed: number | null;
+}
+
+function parseArgs(argv: string[]): Args {
+  const args: Args = { round: null, ifDue: false, dry: false, now: new Date(), seed: null };
+  for (let i = 0; i < argv.length; i += 1) {
+    const a = argv[i];
+    if (a === '--if-due') args.ifDue = true;
+    else if (a === '--dry') args.dry = true;
+    else if (a === '--round') args.round = Number(argv[++i]);
+    else if (a === '--now') args.now = new Date(argv[++i]);
+    else if (a === '--seed') args.seed = Number(argv[++i]);
+  }
+  return args;
+}
+
+function readJson<T>(file: string): T | null {
+  try {
+    return JSON.parse(fs.readFileSync(file, 'utf8')) as T;
+  } catch {
+    return null;
+  }
+}
+
+function main() {
+  const args = parseArgs(process.argv.slice(2));
+  const rotation = readJson<TeamRotationFile>(ROTATION_PATH);
+  const history = readJson<RotationHistoryFile>(HISTORY_PATH) ?? { rounds: [] };
+
+  if (args.ifDue && rotation) {
+    const due = new Date(rotation.nextRotationAt).getTime();
+    if (args.now.getTime() < due) {
+      console.log(
+        `还没到轮换时间：第 ${rotation.round} 轮，下次 ${rotation.nextRotationAt}（北京时间）。本次不生成。`,
+      );
+      return;
+    }
+  }
+
+  const last = history.rounds[history.rounds.length - 1];
+  const round = args.round ?? (rotation?.round ?? last?.round ?? 0) + 1;
+  const seed = args.seed ?? round * 1000003 + 17;
+  const rand = mulberry32(seed);
+
+  const banned = new Set((last?.spiritIds ?? []).map((id) => BY_ID.get(id)?.base ?? '').filter(Boolean));
+  const prevArchetypes = new Set((last?.archetypes ?? []).map((a) => a.id));
+
+  // 本轮战术原型池：先去掉上一轮用过的，再按种子打乱
+  const pool: Arch[] = [...BASE_ARCHETYPES];
+  const weatherChoices = [...WEATHERS];
+  pool.push(weatherArchetype(weatherChoices[Math.floor(rand() * weatherChoices.length)], rand));
+  const monoTypes = monoCandidates(rand);
+  if (monoTypes.length) pool.push(monoArchetype(monoTypes[0]));
+
+  const shuffled = [...pool].sort(() => rand() - 0.5);
+  const ordered = [...shuffled.filter((a) => !prevArchetypes.has(a.id)), ...shuffled.filter((a) => prevArchetypes.has(a.id))];
+
+  const used = new Set<string>();
+  const chosen: { arch: Arch; cand: Candidate }[] = [];
+  const rejected: string[] = [];
+
+  for (const arch of ordered) {
+    if (chosen.length >= 3) break;
+    // 严格排除上一轮的 18 只；每组候选跑 3 次（种子不同），凑够再挑
+    let strict = true;
+    let results: Candidate[] = [];
+    for (let attempt = 0; attempt < 3 && !results.length; attempt += 1) {
+      results = search(arch, banned, used, rand, false).filter(
+        (r) => arch.valid(r.team, r.e) && weakStructureOk(r.e, arch),
+      );
+    }
+    if (!results.length) {
+      strict = false;
+      for (let attempt = 0; attempt < 3 && !results.length; attempt += 1) {
+        results = search(arch, banned, used, rand, true).filter(
+          (r) => arch.valid(r.team, r.e) && weakStructureOk(r.e, arch),
+        );
+      }
+    }
+    if (!results.length) {
+      // 诊断：把最接近的一组打出来，方便调约束
+      const probe = search(arch, banned, used, rand, true).sort((a, b) => a.score - b.score)[0];
+      if (probe) {
+        const v = arch.violations(probe.team, probe.e);
+        rejected.push(
+          `${arch.label}（无合格组合；最接近：${probe.team.map((p) => p.name).join('/')} 违反 ${v} 项｜覆盖 ${probe.e.coverage}｜共同弱点 ${probe.e.sharedWeakCount}｜接住 ${probe.e.coveredSpots}/${probe.e.weakSpots}｜角色缺 ${missingRoles(probe.team)}｜厚血 ${probe.team.filter((p) => p.bulk >= 330).length}｜反打 ${probe.team.filter((p) => p.traitTags.has('comeback')).length}｜同一系最多打 ${probe.e.worstWeakCount} 只）`,
+        );
+      } else {
+        rejected.push(`${arch.label}（候选池不足）`);
+      }
+      continue;
+    }
+    // 质量下限：只在最优秀的前几个候选里按种子挑一个，保证「新」但不牺牲强度
+    const best = results[0].score;
+    const eligible = results.filter((r) => r.score >= best - Math.abs(best) * 0.03).slice(0, 3);
+    const pick = eligible[Math.floor(rand() * eligible.length)] ?? results[0];
+    for (const p of pick.team) used.add(p.base);
+    chosen.push({ arch, cand: pick });
+    console.log(
+      `· ${arch.label}：${pick.team.map((p) => p.name).join(' / ')}｜score ${pick.score}｜覆盖 ${pick.e.coverage}/18｜共同弱点 ${pick.e.sharedWeakCount}${strict ? '' : '（放宽了上一轮去重）'}`,
+    );
+  }
+
+  if (chosen.length < 3) {
+    console.error(`只组出 ${chosen.length} 套，放弃写入。被拒绝的原型：${rejected.join('、') || '无'}`);
+    process.exit(1);
+  }
+
+  const teams = chosen.map(({ arch, cand }) => buildTeam(arch, cand, round, banned));
+  const updatedAt = beijingIso(args.now);
+  const nextRotationAt = beijingIso(new Date(args.now.getTime() + INTERVAL_HOURS * 3600 * 1000));
+
+  const file: TeamRotationFile = {
+    round,
+    updatedAt,
+    nextRotationAt,
+    intervalHours: INTERVAL_HOURS,
+    generatedBy: 'scripts/rotate-teams.ts',
+    dataset: { spiritCount: spirits.length, fetchedAt: meta.fetchedAt },
+    previous: last
+      ? { round: last.round, updatedAt: last.updatedAt, archetypes: last.archetypes }
+      : null,
+    archetypes: chosen.map(({ arch }) => ({ id: arch.id, label: arch.label })),
+    teams: teams.map((t) => t.preset),
+  };
+
+  const metaRound: RotationRoundMeta = {
+    round,
+    updatedAt,
+    nextRotationAt,
+    archetypes: file.archetypes,
+    teams: teams.map((t) => ({
+      id: t.preset.id,
+      name: t.preset.name,
+      category: t.preset.category,
+      archetype: t.preset.archetype,
+      archetypeLabel: t.preset.archetypeLabel,
+      spiritIds: t.preset.members.map((m) => m.spiritId),
+      spiritNames: t.preset.members.map((m) => BY_ID.get(m.spiritId)?.name ?? m.spiritId),
+    })),
+    spiritIds: teams.flatMap((t) => t.preset.members.map((m) => m.spiritId)),
+  };
+
+  console.log('\n=== 第 ' + round + ' 轮');
+  for (const { preset, e } of teams) {
+    console.log(
+      `${preset.name}（${preset.archetypeLabel}）｜平均 ${e.avgTotal}｜最快 ${e.fastest?.spe}｜覆盖 ${e.coverage}/18｜共同弱点 ${e.sharedWeakCount}｜弱点接住 ${e.coveredSpots}/${e.weakSpots}`,
+    );
+    console.log(
+      '   ' +
+        preset.members
+          .map((m) => {
+            const sp = BY_ID.get(m.spiritId);
+            return `${sp?.name}(${sp?.types.join('/')})·${m.role}`;
+          })
+          .join(' / '),
+    );
+  }
+  console.log(`更新时间 ${updatedAt}｜下次 ${nextRotationAt}`);
+  if (rejected.length) console.log(`跳过：${rejected.join('、')}`);
+
+  if (args.dry) {
+    console.log('\n--dry：没有写文件。');
+    return;
+  }
+
+  fs.writeFileSync(ROTATION_PATH, `${JSON.stringify(file, null, 1)}\n`);
+  const rounds = [...history.rounds.filter((r) => r.round !== round), metaRound].sort((a, b) => a.round - b.round);
+  fs.writeFileSync(HISTORY_PATH, `${JSON.stringify({ rounds }, null, 1)}\n`);
+  console.log(`\n写入 ${path.relative(ROOT, ROTATION_PATH)} 与 ${path.relative(ROOT, HISTORY_PATH)}`);
+}
+
+main();
