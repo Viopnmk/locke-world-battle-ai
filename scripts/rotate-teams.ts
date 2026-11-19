@@ -325,6 +325,8 @@ function triggerPicks(p: Profile): { need: string; skill: ResolvedSkill }[] {
  *   4) 角色功能技（先手提速 / 控制抽能 / 辅助回能 / 承伤减伤 / 强化 / 收割）
  */
 function chooseSkills(p: Profile, role: Role, covered: Set<string>, allowBurst: boolean, costCeiling = ENERGY_CAP): SkillPick {
+  // 硬约束：单招能耗不能超过 10 点上限，除非这只精灵有「突破上限」特性
+  const pool = p.pool.filter((sk) => cost(sk) <= (p.overCap ? 30 : ENERGY_CAP));
   const chosen: ResolvedSkill[] = [];
   const notes = new Map<string, { slot: string; why: string }>();
   const take = (sk: ResolvedSkill, slot: string, why: string) => {
@@ -376,7 +378,7 @@ function chooseSkills(p: Profile, role: Role, covered: Set<string>, allowBurst: 
   }
 
   // 4) 角色功能技
-  const rolePool = [...p.pool]
+  const rolePool = [...pool]
     .filter((sk) => !chosen.some((c) => c.name === sk.name))
     .sort((a, b) => roleUtility(b, role) - roleUtility(a, role) || cost(a) - cost(b));
   const util = rolePool.find((sk) => roleUtility(sk, role) > 0);
@@ -386,7 +388,7 @@ function chooseSkills(p: Profile, role: Role, covered: Set<string>, allowBurst: 
 
   // 5) 补满：先补覆盖再补最便宜的可用招
   while (chosen.length < 4) {
-    const rest = p.pool.filter((sk) => !chosen.some((c) => c.name === sk.name));
+    const rest = pool.filter((sk) => !chosen.some((c) => c.name === sk.name));
     if (!rest.length) break;
     const next =
       [...rest].sort((a, b) => coverageRank(b) - coverageRank(a) || effPower(p, b) - effPower(p, a) || cost(a) - cost(b))[0] ??
@@ -396,7 +398,7 @@ function chooseSkills(p: Profile, role: Role, covered: Set<string>, allowBurst: 
 
   // 6) 兜底：若 4 招里没有任何入场可用的输出（0 能量特性），换一个 0 费/低费招进来
   if (chosen.length === 4 && !chosen.some((sk) => isDmg(sk) && cost(sk) <= Math.max(p.entry, 0))) {
-    const cheap = p.pool
+    const cheap = pool
       .filter((sk) => isDmg(sk) && cost(sk) <= Math.max(p.entry, 1))
       .sort((a, b) => cost(a) - cost(b) || effPower(p, b) - effPower(p, a))[0];
     if (cheap && !chosen.some((c) => c.name === cheap.name)) {
