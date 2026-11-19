@@ -101,6 +101,9 @@ export function auditRotation(rotation: TeamRotationFile, history: RotationHisto
     if (Math.abs(gap - 48) > 0.01) problems.push(`updatedAt → nextRotationAt 间隔 ${gap} 小时，应为 48`);
   }
   if (rotation.teams.length !== 3) problems.push(`当前轮应有 3 套阵容，实际 ${rotation.teams.length}`);
+  if (rotation.previous && rotation.previous.round >= rotation.round) {
+    problems.push(`previous 指向第 ${rotation.previous.round} 轮，不能等于或晚于当前第 ${rotation.round} 轮`);
+  }
 
   /* 2) 逐队 */
   const archetypes = new Set<string>();

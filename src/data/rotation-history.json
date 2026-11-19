@@ -112,8 +112,8 @@
     },
     {
       "round": 2,
-      "updatedAt": "2026-11-20T01:08:24+08:00",
-      "nextRotationAt": "2026-11-22T01:08:24+08:00",
+      "updatedAt": "2026-11-20T01:15:39+08:00",
+      "nextRotationAt": "2026-11-22T01:15:39+08:00",
       "archetypes": [
         {
           "id": "burst",

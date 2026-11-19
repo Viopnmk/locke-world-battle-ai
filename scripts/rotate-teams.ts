@@ -1507,6 +1507,18 @@ function main() {
     teams.push(makePreset(arch, sets, round));
   });
 
+  // 同轮重生成时，上一轮要从历史/备份恢复，不能写成自己
+  let previous = rotation?.previous ?? null;
+  if (rotation && rotation.round === round && (!previous || previous.round === round)) {
+    const backup = readJson<TeamRotationFile>(path.join(BACKUP_DIR, `team-rotation.r${round - 1}.json`));
+    const meta = history.rounds.find((r) => r.round === round - 1);
+    previous = backup
+      ? { round: backup.round, updatedAt: backup.updatedAt, archetypes: backup.archetypes, teams: backup.teams }
+      : meta
+        ? { round: meta.round, updatedAt: meta.updatedAt, archetypes: meta.archetypes }
+        : null;
+  }
+
   const next: TeamRotationFile = {
     round,
     updatedAt: beijingIso(now),
@@ -1514,14 +1526,16 @@ function main() {
     intervalHours: INTERVAL_HOURS,
     generatedBy: 'scripts/rotate-teams.ts v2 (energy model)',
     dataset: { spiritCount: meta.spiritCount, fetchedAt: meta.fetchedAt },
-    previous: rotation
-      ? {
-          round: rotation.round,
-          updatedAt: rotation.updatedAt,
-          archetypes: rotation.archetypes,
-          teams: rotation.teams,
-        }
-      : null,
+    // 同轮重生成沿用恢复出的上一轮；新一轮则把刚结束的这一轮完整存下来
+    previous:
+      rotation && rotation.round !== round
+        ? {
+            round: rotation.round,
+            updatedAt: rotation.updatedAt,
+            archetypes: rotation.archetypes,
+            teams: rotation.teams,
+          }
+        : previous,
     archetypes: ARCHETYPES.map((a) => ({ id: a.id, label: a.label })),
     teams,
   };
