@@ -275,6 +275,7 @@ scripts/
   rotate-teams.ts          48 小时轮换引擎：10 种战术原型 + 全图鉴约束搜索 → team-rotation.json / rotation-history.json
   verify-teams.ts          当前轮 3 套阵容校验（能量复算 / 特性可用性 / 血脉 ≤1 / 同 dex / 联动证据 / 覆盖口径）
   lib/team-audit.ts        校验核心：生成器写盘前与 CLI 共用同一份逻辑
+  test-team-audit.ts       校验器敏感性测试：8 个故意破坏的样本必须全部被抓（npm run test:audit）
   run-rotation-job.sh      定时任务：rotate（内置校验）→ verify → typecheck → build → commit & push → deploy
   screen-mixed.ts          历史：跨属性混搭队的量化筛选（读 archive/ 里的旧六套复算）
   verify-tactics.ts        伤害估算与分析师点评全量校验（全量对位 + 300 组随机阵容）
