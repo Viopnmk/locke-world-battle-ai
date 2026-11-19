@@ -4,6 +4,7 @@
  *   npm run rotate:teams            # 生成下一轮（3 套全新阵容）并写回 src/data
  *   npm run rotate:teams -- --if-due   # 定时任务用：没到 nextRotationAt 就什么都不做
  *   npm run rotate:teams -- --dry      # 只打印候选，不写文件
+ *   npm run rotate:teams -- --refresh  # 只重写当前轮的战术手册（起手/4 技能/联动/5 阶段），阵容与时间不变
  *
  * 输入只有 src/data 里的真实数据：spirits.json（662 只形态）、skills.json（599 个技能）、
  * learnsets.json（可学记录）、type-chart.json（18 系倍率）。输出：
@@ -19,9 +20,12 @@ import { bestHit } from '../src/lib/analysis';
 import { meta, skillsOf, spirits } from '../src/lib/spirits';
 import { matchup, TYPE_ORDER } from '../src/lib/typeChart';
 import type {
+  BattlePhase,
   ChainStep,
+  LeadPlan,
   PresetMember,
   PresetSkillRef,
+  SkillSynergy,
   RotationHistoryFile,
   RotationRoundMeta,
   TeamCategory,
@@ -95,6 +99,17 @@ function effectBrief(text: string | null | undefined, max = 58): string {
   const cut = t.search(/[。；]/);
   if (cut > 0 && cut <= max) return t.slice(0, cut + 1);
   return t.length > max ? `${t.slice(0, max)}…` : t;
+}
+
+/** 嵌在句子里用的效果文本：去掉句尾标点，避免出现「。。」「。，」 */
+function effectCore(text: string | null | undefined, max = 58): string {
+  return effectBrief(text, max).replace(/[。；]+$/, '');
+}
+
+/** 真正的蓄力技：效果以「蓄力，」开头；「无需蓄力 / 蓄力状态」这类描述不算 */
+function isChargeSkill(sk: ResolvedSkill): boolean {
+  const eff = sk.effect ?? '';
+  return /蓄力/.test(eff) && !/无需蓄力|蓄力状态|蓄力时|蓄力中|任意方式蓄力/.test(eff);
 }
 
 /** 名字列表：「A、B、C」（数量超过 limit 时补「等 N 只」） */
@@ -1071,7 +1086,79 @@ function search(
 
 /* ------------------------------------------------------------------ 文案生成 */
 
-function pickSkills(p: Profile): { refs: PresetSkillRef[]; primary: ResolvedSkill | null } {
+interface SkillPick {
+  refs: PresetSkillRef[];
+  primary: ResolvedSkill | null;
+  /** 按推荐顺序排列的真实技能对象，供战术链引用 */
+  chosen: ResolvedSkill[];
+}
+
+/** 每个角色在该队里的具体职责（角色徽章旁边那句） */
+const DUTY_BY_ROLE: Record<RoleName, string> = {
+  先手: '首发抢节奏',
+  核心输出: '主力输出',
+  控制: '控场干扰',
+  辅助: '续航与增益',
+  承伤: '属性联防盾',
+  收割: '残局收割',
+};
+
+/** 第三格「机制位」按角色挑真实机制：只匹配技能原文，匹配不到就不硬塞 */
+const ROLE_UTIL: Record<RoleName, { prefer: RegExp[]; label: string }> = {
+  先手: { prefer: [/速度\+\d|迅捷/, /敌方获得速度-\d|减速/], label: '抢节奏' },
+  核心输出: { prefer: [/物攻\+\d|魔攻\+\d|双攻\+\d|全技能威力\+\d|威力\+\d/], label: '开打前强化' },
+  控制: {
+    prefer: [/全技能能耗\+|失去\d+能量|偷取[^。；]{0,4}能量|印记|灼烧|中毒|冻结|眩晕|驱散|返场/],
+    label: '压制',
+  },
+  辅助: {
+    prefer: [
+      /回复[^。；]{0,6}生命|回复\d+%生命|回复能量/,
+      /护盾|免疫|清除|驱散/,
+      /减伤/,
+    ],
+    label: '续航',
+  },
+  承伤: { prefer: [/减伤/, /物防\+\d|魔防\+\d|护盾|加固/], label: '减伤' },
+  收割: { prefer: [/先手\+\d|迅捷/, /物攻\+\d|魔攻\+\d|全技能威力\+\d/], label: '收尾' },
+};
+
+function energyTag(sk: ResolvedSkill): string {
+  return typeof sk.energy === 'number' ? `，能耗 ${sk.energy}` : '';
+}
+
+/** 输出技能的推荐理由：全部是这只精灵自己的数值 */
+function damageWhy(p: Profile, sk: ResolvedSkill, main: boolean): string {
+  const stab = p.types.includes(sk.type) ? '本系' : '';
+  const charge = isChargeSkill(sk) ? '，蓄力技' : '';
+  const hits = TYPE_ORDER.filter((t) => matchup(sk.type, [t]).multiplier >= 2);
+  if (main) {
+    return `${stab}${sk.category}最高威力 ${sk.power}${energyTag(sk)}${charge}${hits.length ? `，对${joinNames(hits.slice(0, 3))}系打出 ×2` : ''}`;
+  }
+  return hits.length
+    ? `另一属性补盲：对${joinNames(hits.slice(0, 3))}系打出 ×2${energyTag(sk)}`
+    : `第二个属性输出（对 18 系没有 ×2）${energyTag(sk)}`;
+}
+
+function utilWhy(sk: ResolvedSkill, role: RoleName): string {
+  const eff = sk.effect ?? '';
+  const label = /敌方[^。；]{0,8}回复/.test(eff)
+    ? '反制'
+    : /回复/.test(eff)
+      ? '续航'
+      : /护盾|免疫|清除|驱散/.test(eff)
+        ? '解场'
+        : /减伤/.test(eff)
+          ? '保命'
+          : ROLE_UTIL[role].label;
+  return `${label}：${effectCore(eff, 52)}${energyTag(sk)}`;
+}
+
+/**
+ * 每只精灵推荐 4 个真实技能：主攻 → 补盲 → 机制（按角色）→ 防守/第二个补盲。
+ * 四个位置都从学习面里挑，不写图鉴没有的技能，也不编数值。
+ */
+function pickSkillsFor(p: Profile, role: RoleName): SkillPick {
   const all = skillsOf(p.spirit);
   const dmg = damagers(p.spirit);
   const stab = dmg.filter((sk) => p.types.includes(sk.type));
@@ -1085,17 +1172,17 @@ function pickSkills(p: Profile): { refs: PresetSkillRef[]; primary: ResolvedSkil
 
   const chosen: ResolvedSkill[] = [];
   const refs: PresetSkillRef[] = [];
-  if (primary) {
-    chosen.push(primary);
-    const isStab = p.types.includes(primary.type);
-    refs.push({
-      name: primary.name,
-      why: `${isStab ? '本系' : ''}${primary.category}最高威力 ${primary.power}${primary.energy ? `，能耗 ${primary.energy}` : ''}`,
-    });
-  }
+  const used = new Set<string>();
+  const add = (sk: ResolvedSkill, slot: string, why: string) => {
+    if (used.has(sk.name)) return;
+    used.add(sk.name);
+    chosen.push(sk);
+    refs.push({ name: sk.name, why, slot });
+  };
 
-  // 第二招：补打击面 —— 找能对主招打不动/打不痛的防守属性打出 2 倍的技能
-  let secondary: ResolvedSkill | null = null;
+  if (primary) add(primary, '主攻', damageWhy(p, primary, true));
+
+  // 第二格：补打击面 —— 找能对主招打不动/打不痛的防守属性打出 2 倍的技能
   if (primary) {
     const primaryType = primary.type;
     const weakAgainst = TYPE_ORDER.filter((t) => matchup(primaryType, [t]).multiplier <= 1);
@@ -1106,46 +1193,68 @@ function pickSkills(p: Profile): { refs: PresetSkillRef[]; primary: ResolvedSkil
         hits: weakAgainst.filter((t) => matchup(sk.type, [t]).multiplier >= 2),
       }))
       .filter((x) => x.hits.length > 0)
-      .sort((a, b) => b.hits.length - a.hits.length || (b.sk.power ?? 0) - (a.sk.power ?? 0));
-    secondary = scored[0]?.sk ?? null;
-    if (secondary) {
-      chosen.push(secondary);
-      const hits = TYPE_ORDER.filter((t) => matchup(secondary!.type, [t]).multiplier >= 2);
-      refs.push({
-        name: secondary.name,
-        why: `对 ${joinNames(hits.slice(0, 3))} 打出 ×2（主招对这些属性最多 ×1）`,
-      });
+      // 补盲要能打：命中面 × 20 + 威力 × 0.6，避免为了多一个 ×2 带 20 威力的技能
+      .sort(
+        (a, b) =>
+          (b.hits.length * 20 + (b.sk.power ?? 0) * 0.6) -
+          (a.hits.length * 20 + (a.sk.power ?? 0) * 0.6),
+      );
+    const secondary = scored[0]?.sk ?? null;
+    if (secondary) add(secondary, '补盲', damageWhy(p, secondary, false));
+  }
+
+  // 第三格：角色机制位（先手要速度、输出要强化、控制要压制、承伤要减伤…）
+  const byPref = (res: RegExp[]) => {
+    for (const re of res) {
+      const hit = all
+        .filter((sk) => {
+          if (used.has(sk.name)) return false;
+          const eff = sk.effect ?? '';
+          // 辅助位不推荐「连对手一起回复」的技能，除非它没有别的续航手段
+          if (role === '辅助' && /自己和敌方|敌方[^。；]{0,8}回复/.test(eff)) return false;
+          return re.test(eff);
+        })
+        .sort((a, b) => (a.energy ?? 99) - (b.energy ?? 99) || (b.power ?? 0) - (a.power ?? 0))[0];
+      if (hit) return hit;
     }
+    return null;
+  };
+  const mechanic = byPref(ROLE_UTIL[role].prefer);
+  if (mechanic) add(mechanic, '机制', utilWhy(mechanic, role));
+
+  // 第四格：没有减伤就补一个减伤，否则补第二个属性输出 / 先手技
+  if (!chosen.some((sk) => /减伤/.test(sk.effect ?? ''))) {
+    const guard = all
+      .filter((sk) => !used.has(sk.name) && /减伤\d+%/.test(sk.effect ?? ''))
+      .sort((a, b) => {
+        const ra = Number(/减伤(\d+)%/.exec(a.effect ?? '')?.[1] ?? 0);
+        const rb = Number(/减伤(\d+)%/.exec(b.effect ?? '')?.[1] ?? 0);
+        return rb - ra || (a.energy ?? 99) - (b.energy ?? 99);
+      })[0];
+    if (guard) add(guard, '防守', `保命位：${effectCore(guard.effect, 52)}${energyTag(guard)}`);
+  }
+  if (refs.length < 4) {
+    const altDmg =
+      dmg.find((sk) => {
+        if (used.has(sk.name) || sk.type === primary?.type) return false;
+        return TYPE_ORDER.some((t) => matchup(sk.type, [t]).multiplier >= 2);
+      }) ?? dmg.find((sk) => !used.has(sk.name) && sk.type !== primary?.type);
+    if (altDmg) add(altDmg, '补盲', damageWhy(p, altDmg, false));
+  }
+  if (refs.length < 4) {
+    const priority = byPref([/先手\+\d|迅捷/]);
+    if (priority) add(priority, '机制', utilWhy(priority, role));
+  }
+  // 兜底：保证 4 个真实技能（每只都从自己的学习面里取，绝不留空位）
+  while (refs.length < 4) {
+    const extra = [...all]
+      .filter((sk) => !used.has(sk.name))
+      .sort((a, b) => (isDamaging(a) ? 1 : 0) - (isDamaging(b) ? 1 : 0) || (a.energy ?? 99) - (b.energy ?? 99))[0];
+    if (!extra) break;
+    add(extra, '机制', `可学技能：${effectCore(extra.effect) || skCategory(extra)}${energyTag(extra)}`);
   }
 
-  // 第三招：机制/变化技能优先，其次第三个不同属性输出
-  const usedNames = new Set(chosen.map((sk) => sk.name));
-  const mechanic = [...all]
-    .filter((sk) => !usedNames.has(sk.name) && !isDamaging(sk) && /回复|减伤|护盾|提升|降低|异常|灼烧|中毒|冻结|能耗|天气|印记|换人|偷取/.test(sk.effect ?? ''))
-    .sort((a, b) => (a.energy ?? 99) - (b.energy ?? 99))[0];
-  if (mechanic) {
-    chosen.push(mechanic);
-    refs.push({ name: mechanic.name, why: `变化技能：${effectBrief(mechanic.effect)}` });
-  } else {
-    const third = dmg.find((sk) => !usedNames.has(sk.name) && sk.type !== primary?.type);
-    if (third) {
-      chosen.push(third);
-      refs.push({
-        name: third.name,
-        why: `第三个属性的输出，对 ${joinNames(
-          TYPE_ORDER.filter((t) => matchup(third!.type, [t]).multiplier >= 2).slice(0, 2),
-        )} 打出 ×2`,
-      });
-    }
-  }
-
-  // 兜底：变化技能补不进来时再塞一个可学技能，保证 2~4 个
-  if (refs.length < 2) {
-    const extra = all.find((sk) => !usedNames.has(sk.name));
-    if (extra) refs.push({ name: extra.name, why: `可学的另一个技能：${effectBrief(extra.effect) || skCategory(extra)}` });
-  }
-
-  return { refs: refs.slice(0, 4), primary };
+  return { refs: refs.slice(0, 4), primary, chosen: chosen.slice(0, 4) };
 }
 
 function skCategory(sk: ResolvedSkill): string {
@@ -1157,6 +1266,7 @@ function noteForRole(
   role: RoleName,
   primary: ResolvedSkill | null,
   control: { label: string; skillName?: string } | null,
+  utility: ResolvedSkill | null,
 ): string {
   const spe = p.stats.spe;
   switch (role) {
@@ -1166,29 +1276,34 @@ function noteForRole(
       return `${p.mainIsPhysical ? '物攻' : '魔攻'} ${p.mainAtk}，主招 ${primary ? `${primary.name}（威力 ${primary.power}）` : '—'}，最高威力 ${p.maxPower}（${p.maxPowerSkill?.name ?? '—'}），总种族值 ${p.total}。`;
     case '承伤':
       return p.bulk < 290
-        ? `生命 ${p.stats.hp}／物防 ${p.stats.def}／魔防 ${p.stats.spd}，是这队里最厚的一只；对上克制招也撑不住，只能先手换掉。`
+        ? `生命 ${p.stats.hp}／物防 ${p.stats.def}／魔防 ${p.stats.spd}，承伤位；对上克制招也撑不住，只能先手换掉。`
         : `生命 ${p.stats.hp}／物防 ${p.stats.def}／魔防 ${p.stats.spd}，负责吃一轮伤害再换人。`;
     case '控制':
-      if (control?.label && p.traitTags.size && control.label === '特性') {
-        return `特性「${p.spirit.trait?.name ?? '—'}」：${effectBrief(p.spirit.trait?.effect)}`;
+      if (utility && /全技能能耗\+|失去\d+能量|偷取[^。；]{0,4}能量|印记|灼烧|中毒|冻结|眩晕|驱散|返场/.test(utility.effect ?? '')) {
+        return `用「${utility.name}」形成压制：${effectCore(utility.effect, 54)}。`;
+      }
+      if (control?.label === '特性' && p.traitTags.size) {
+        return `特性「${p.spirit.trait?.name ?? '—'}」：${effectCore(p.spirit.trait?.effect, 54)}。`;
       }
       return control?.skillName
-        ? `用「${control.skillName}」形成压制：${effectBrief(
+        ? `用「${control.skillName}」形成压制：${effectCore(
             p.keySkills.find((sk) => sk.name === control.skillName)?.effect,
-          )}`
-        : `特性「${p.spirit.trait?.name ?? '—'}」：${effectBrief(p.spirit.trait?.effect)}`;
+            54,
+          )}。`
+        : `特性「${p.spirit.trait?.name ?? '—'}」：${effectCore(p.spirit.trait?.effect, 54)}。`;
     case '辅助': {
+      if (utility) return `辅助位，推荐「${utility.name}」：${effectCore(utility.effect, 54)}。`;
       const supportTrait = p.traitTags.has('sustain') || p.traitTags.has('leech') ||
         /回复|减伤|护盾|提升|清除|免疫|治疗/.test(p.spirit.trait?.effect ?? '');
-      if (supportTrait) return `辅助位，特性「${p.spirit.trait?.name ?? '—'}」：${effectBrief(p.spirit.trait?.effect)}`;
+      if (supportTrait) return `辅助位，特性「${p.spirit.trait?.name ?? '—'}」：${effectCore(p.spirit.trait?.effect, 54)}。`;
       const sk =
         p.supportSkills.find((x) => /回复[^。；]{0,6}生命|护盾|免疫|清除/.test(x.effect ?? '')) ??
         p.supportSkills.find((x) => /提升|威力\+|双攻\+/.test(x.effect ?? '')) ??
         p.supportSkills.find((x) => /减伤/.test(x.effect ?? '')) ??
         p.supportSkills[0];
       return sk
-        ? `辅助位，可学「${sk.name}」：${effectBrief(sk.effect)}`
-        : `辅助位，特性「${p.spirit.trait?.name ?? '—'}」：${effectBrief(p.spirit.trait?.effect)}`;
+        ? `辅助位，可学「${sk.name}」：${effectCore(sk.effect, 54)}。`
+        : `辅助位，特性「${p.spirit.trait?.name ?? '—'}」：${effectCore(p.spirit.trait?.effect, 54)}。`;
     }
     case '收割':
       return p.traitTags.has('comeback')
@@ -1209,6 +1324,633 @@ function chainText(p: Profile, primary: ResolvedSkill | null, teamHasWeather: bo
       ? '（本队没有开天气的技能，这条只在天气自然出现时生效。）'
       : '';
   return `${traitPart}${skillPart}${weatherNote}`;
+}
+
+/* ------------------------------------------------------------------ 战术手册 */
+
+const mulLabel = (mul: number) => `×${mul}`;
+
+/** 某只精灵的 ×2 以上弱点属性 */
+function weakTypesOf(p: Profile): string[] {
+  return p.weak;
+}
+
+/** 特性在本队里的用法：原文照抄，再补一句队内能接上的条件 */
+function traitSynergyFor(p: Profile, team: Profile[], arch: Arch): string {
+  const trait = p.spirit.trait;
+  if (!trait) return '图鉴未提供特性，这一只主要靠技能位发挥。';
+  const eff = trait.effect ?? '';
+  const base = `「${trait.name}」${effectCore(eff, 54)}`;
+  const extra: string[] = [];
+  if (/天气/.test(eff)) {
+    const setter = team.find(
+      (o) => o.id !== p.id && skillsOf(o.spirit).some((sk) => /将天气改为/.test(sk.effect ?? '')),
+    );
+    if (setter) extra.push(`${shortName(setter.name)} 负责开天气，这条只在天气回合内生效`);
+    else if (arch.weather) extra.push('本队没有开天气的技能，只在天气自然出现时生效');
+  }
+  if (p.traitTags.has('tax') || p.traitTags.has('steal')) extra.push('对手每回合都在多付能量，适合先耗再打');
+  if (p.traitTags.has('comeback')) extra.push('队伍换掉的人越多，它入场时越强');
+  if (p.traitTags.has('leech') || p.traitTags.has('sustain')) extra.push('伤害直接换血，前排不用带治疗位');
+  if (p.traitTags.has('switch')) extra.push('对手换人时反而更亏');
+  if (p.traitTags.has('charge')) {
+    const fuel = skillsOf(p.spirit).find(isChargeSkill);
+    if (/可以使用任一携带技能/.test(eff)) {
+      extra.push('蓄力那回合可以改打别的技能，不会空过');
+    } else if (fuel) {
+      extra.push(`队里「${fuel.name}」是蓄力技，正好喂给这条特性`);
+    } else {
+      extra.push('蓄力技就是它的燃料');
+    }
+  } else if (/应对成功/.test(eff)) {
+    const guard = team.find(
+      (o) => o.id !== p.id && skillsOf(o.spirit).some((sk) => /减伤\d+%/.test(sk.effect ?? '')),
+    );
+    if (guard) extra.push(`${shortName(guard.name)} 带「防御」，它应对成功就能点亮这条`);
+  }
+  return extra.length ? `${base}；${extra.slice(0, 2).join('；')}。` : `${base}。`;
+}
+
+/** 起手第一只：谁首发、为什么、开场打哪两招、什么时候该换 */
+function buildLead(
+  team: Profile[],
+  roles: Map<string, RoleName>,
+  picks: Map<string, SkillPick>,
+): LeadPlan {
+  const lead = team.find((p) => roles.get(p.id) === '先手') ?? [...team].sort((a, b) => b.stats.spe - a.stats.spe)[0];
+  const pick = picks.get(lead.id)!;
+  const secondFastest = [...team]
+    .filter((p) => p.id !== lead.id)
+    .sort((a, b) => b.stats.spe - a.stats.spe)[0];
+  const priority = pick.chosen.find((sk) => /先手\+\d|迅捷/.test(sk.effect ?? ''));
+  const boost = pick.chosen.find(
+    (sk) =>
+      !isDamaging(sk) && /速度\+\d|全技能威力\+\d|双攻\+\d|魔攻\+\d|物攻\+\d/.test(sk.effect ?? ''),
+  );
+  const weaknesses = weakTypesOf(lead);
+  const covered = weaknesses.filter((t) => team.some((o) => o.id !== lead.id && o.defMul[TI.get(t)!] <= 0.5));
+
+  const whyParts: string[] = [];
+  whyParts.push(
+    `速度 ${lead.stats.spe}，全队第一${
+      secondFastest ? `（第二 ${shortName(secondFastest.name)} ${secondFastest.stats.spe}）` : ''
+    }`,
+  );
+  if (priority) whyParts.push(`「${priority.name}」带先手（${effectCore(priority.effect, 24)}）`);
+  if (boost) whyParts.push(`开场可先「${boost.name}」（能耗 ${boost.energy ?? '—'}）把状态叠起来`);
+  whyParts.push(
+    weaknesses.length
+      ? `本身 ${weaknesses.length} 个 ×2 弱点（${joinTypes(weaknesses)}），其中 ${covered.length} 个有队友以 ≤0.5 倍接住`
+      : '没有 ×2 弱点，可以放心站场抢第一波节奏',
+  );
+
+  const openerSkill = boost ?? priority ?? pick.primary;
+  const secondSkill =
+    openerSkill === pick.primary
+      ? pick.chosen.find((sk) => sk !== openerSkill && isDamaging(sk)) ?? null
+      : pick.primary;
+  const refFor = (sk: ResolvedSkill): PresetSkillRef => {
+    const found = pick.refs.find((r) => r.name === sk.name);
+    return {
+      name: sk.name,
+      slot: found?.slot ?? '起手',
+      why: `${sk.type}·${sk.category}${sk.power ? `·威力 ${sk.power}` : ''}${energyTag(sk)}：${effectBrief(sk.effect, 46)}`,
+    };
+  };
+  const openers: PresetSkillRef[] = [];
+  if (openerSkill) openers.push(refFor(openerSkill));
+  if (secondSkill) openers.push(refFor(secondSkill));
+
+  const worst = [...weaknesses].sort((a, b) => lead.defMul[TI.get(b)!] - lead.defMul[TI.get(a)!])[0];
+  const answer = worst
+    ? [...team]
+        .filter((p) => p.id !== lead.id && p.defMul[TI.get(worst)!] <= 0.5)
+        .sort((a, b) => a.defMul[TI.get(worst)!] - b.defMul[TI.get(worst)!])[0]
+    : null;
+  const caution = worst
+    ? `对面用 ${worst}系打过来是 ${mulLabel(lead.defMul[TI.get(worst)!])}，${
+        answer ? `直接换 ${shortName(answer.name)}（${mulLabel(answer.defMul[TI.get(worst)!])}）上场接，别让首发硬吃` : '队里没人抗，首发只能打完一轮就换'
+      }。`
+    : '首发没有 ×2 弱点，唯一的风险是被对面先手秒掉，注意留一只换人盾。';
+
+  return {
+    spiritId: lead.id,
+    why: `${whyParts.join('；')}。`,
+    openers,
+    caution,
+  };
+}
+
+/** 找某只精灵推荐的输出技能（按推荐顺序） */
+function pickedDamagers(id: string, picks: Map<string, SkillPick>): ResolvedSkill[] {
+  return (picks.get(id)?.chosen ?? []).filter((sk) => isDamaging(sk));
+}
+
+/** 核心技能联动：只写队里真实存在的「特性 × 技能」「技能 × 技能」关系 */
+function buildSynergies(
+  team: Profile[],
+  picks: Map<string, SkillPick>,
+  e: Eval,
+  arch: Arch,
+  teamHasWeather: boolean,
+): SkillSynergy[] {
+  const out: SkillSynergy[] = [];
+  const memberName = (id: string) => shortName(BY_ID.get(id)?.name ?? id);
+
+  /* 1) 属性联防：共同弱点 + 队友 ≤0.5 倍接住 */
+  const worst = e.sharedWeak[0];
+  if (worst && worst.count >= 2) {
+    const i = TI.get(worst.type)!;
+    const answer = [...team]
+      .filter((p) => p.defMul[i] <= 0.5)
+      .sort((a, b) => a.defMul[i] - b.defMul[i])[0];
+    if (answer) {
+      const atk = pickedDamagers(answer.id, picks).find(
+        (sk) => matchup(sk.type, [worst.type]).multiplier >= 2,
+      );
+      out.push({
+        title: `${worst.type}系联防 → ${memberName(answer.id)} 接`,
+        text:
+          `${worst.type}系一招能同时打中 ${joinNames(worst.members.map(shortName), 2)}（最高 ${mulLabel(worst.maxMul)}）；` +
+          `${memberName(answer.id)}（${answer.types.join('/')}）对它是 ${mulLabel(answer.defMul[i])}，换它上场就是止损点` +
+          (atk
+            ? `，它的「${atk.name}」（${atk.type}·威力 ${atk.power}）还能对${worst.type}系打出 ${mulLabel(
+                matchup(atk.type, [worst.type]).multiplier,
+              )}。`
+            : '。'),
+        spiritIds: [answer.id],
+        skills: atk ? [{ spiritId: answer.id, name: atk.name }] : [],
+      });
+    }
+  }
+
+  /* 2) 状态接力：先挂状态，再吃「若敌方有 X」的加成 */
+  for (const state of ['冻结', '灼烧', '中毒']) {
+    const givers: { p: Profile; sk: ResolvedSkill }[] = [];
+    for (const p of team) {
+      for (const sk of picks.get(p.id)?.chosen ?? []) {
+        if (new RegExp(`获得[^。；]{0,6}${state}`).test(sk.effect ?? '')) givers.push({ p, sk });
+      }
+    }
+    if (!givers.length) continue;
+    for (const p of team) {
+      for (const sk of picks.get(p.id)?.chosen ?? []) {
+        const eff = sk.effect ?? '';
+        if (!new RegExp(`若敌方有${state}|${state}翻倍|敌方有[^。；]{0,4}${state}`).test(eff)) continue;
+        const giver = givers.find((g) => g.p.id !== p.id) ?? givers[0];
+        const plus = /威力\+(\d+)/.exec(eff)?.[1];
+        out.push({
+          title: `${giver.sk.name} 挂${state} → ${sk.name}`,
+        text:
+            `${memberName(giver.p.id)} 先用「${giver.sk.name}」（${giver.sk.type}·能耗 ${giver.sk.energy ?? '—'}）：${effectCore(
+              giver.sk.effect,
+              48,
+            )}；${memberName(p.id)} 的「${sk.name}」（${sk.type}·威力 ${sk.power}）原文写着「${effectCore(eff, 56)}」${
+              plus && sk.power ? `，也就是这一发按 ${sk.power} + ${plus}（${sk.power + Number(plus)}）算` : ''
+            }。`,
+          spiritIds: [giver.p.id, p.id],
+          skills: [
+            { spiritId: giver.p.id, name: giver.sk.name },
+            { spiritId: p.id, name: sk.name },
+          ],
+        });
+        break;
+      }
+      if (out.some((s) => s.title.includes(state))) break;
+    }
+  }
+
+  /* 3) 能量压制：让对手多付费 / 直接抽走能量，再叠一个低耗高威力输出 */
+  const taxTrait = team.find((p) => p.traitTags.has('tax'));
+  if (taxTrait) {
+    const cheap = team
+      .filter((p) => p.id !== taxTrait.id)
+      .map((p) => ({ p, sk: pickedDamagers(p.id, picks).find((sk) => (sk.energy ?? 99) <= 3 && (sk.power ?? 0) >= 90) }))
+      .filter((x): x is { p: Profile; sk: ResolvedSkill } => Boolean(x.sk))
+      .sort((a, b) => (b.sk.power ?? 0) - (a.sk.power ?? 0))[0];
+    out.push({
+      title: `${taxTrait.spirit.trait?.name ?? '能耗压制'} → ${cheap ? cheap.sk.name : '拖到没能量'}`,
+      text:
+        `${memberName(taxTrait.id)} 的「${taxTrait.spirit.trait?.name}」：${effectCore(taxTrait.spirit.trait?.effect, 56)}；` +
+        (cheap
+          ? `${memberName(cheap.p.id)} 的「${cheap.sk.name}」（${cheap.sk.type}·威力 ${cheap.sk.power}·能耗 ${cheap.sk.energy}）是全队最便宜的高威力输出——对手每回合都在多付能量，这一发等于白拿伤害。`
+          : '对手每回合都在多付能量，耗到它的高耗技能打不出来为止。'),
+      spiritIds: [taxTrait.id, ...(cheap ? [cheap.p.id] : [])],
+      skills: cheap ? [{ spiritId: cheap.p.id, name: cheap.sk.name }] : [],
+    });
+  }
+  const stealTrait = team.find((p) => /使用([^。；]{1,3})系技能后，敌方失去\d+能量/.test(p.spirit.trait?.effect ?? ''));
+  if (stealTrait) {
+    const eff = stealTrait.spirit.trait?.effect ?? '';
+    const need = /使用([^。；]{1,3})系技能后/.exec(eff)?.[1];
+    const lose = /敌方失去(\d+)能量/.exec(eff)?.[1];
+    const trigger =
+      (picks.get(stealTrait.id)?.chosen ?? []).find((sk) => sk.type === need) ?? null;
+    out.push({
+      title: `${stealTrait.spirit.trait?.name ?? '抽能'} → ${trigger ? trigger.name : '恶系技能'}`,
+      text:
+        `${memberName(stealTrait.id)} 的「${stealTrait.spirit.trait?.name}」：${effectCore(eff, 58)}；` +
+        (trigger
+          ? `它带的「${trigger.name}」（${trigger.type}·威力 ${trigger.power ?? '—'}·能耗 ${trigger.energy ?? '—'}）正好是${need}系，1 次出手除了伤害，还让对手失去 ${lose ?? '—'} 能量。`
+          : `只要用${need}系技能就能触发，1 次出手换对手 ${lose ?? '—'} 能量。`),
+      spiritIds: [stealTrait.id],
+      skills: trigger ? [{ spiritId: stealTrait.id, name: trigger.name }] : [],
+    });
+  }
+
+  /* 4) 蓄力联动：蓄力技喂养「每次进入蓄力」的特性，蓄力回合还能改打别的招 */
+  const chargeTrait = team.find((p) => p.traitTags.has('charge'));
+  if (chargeTrait) {
+    const pick = picks.get(chargeTrait.id)!;
+    const chargeSkills = pick.chosen.filter(isChargeSkill);
+    const anySkill = pick.chosen.find((sk) => !isChargeSkill(sk) && isDamaging(sk));
+    const eff = chargeTrait.spirit.trait?.effect ?? '';
+    const per = /能耗永久-(\d+)/.exec(eff)?.[1];
+    const canUseAny = /可以使用任一携带技能/.test(eff);
+    const rider = canUseAny && anySkill ? anySkill : null;
+    if (chargeSkills.length || canUseAny) {
+      out.push({
+        title: `${chargeTrait.spirit.trait?.name ?? '蓄力'} × ${chargeSkills[0]?.name ?? rider?.name ?? '蓄力'}`,
+        text:
+          `${memberName(chargeTrait.id)} 的「${chargeTrait.spirit.trait?.name}」：${effectCore(eff, 56)}；` +
+          (chargeSkills.length && per
+            ? chargeSkills.length > 1
+              ? `它带的「${chargeSkills.map((s) => s.name).join('」「')}」都是蓄力技，每蓄一次全技能能耗永久 -${per}，${chargeSkills.length} 次就是 -${Number(per) * chargeSkills.length}。`
+              : `它带的「${chargeSkills[0].name}」是蓄力技，每蓄一次全技能能耗永久 -${per}。`
+            : '') +
+          (rider
+            ? `蓄力那回合不会空过：可以改打「${rider.name}」（${rider.type}·威力 ${rider.power}）补盲，双防同时 +100%。`
+            : ''),
+        spiritIds: [chargeTrait.id],
+        skills: [
+          ...(chargeSkills[0] ? [{ spiritId: chargeTrait.id, name: chargeSkills[0].name }] : []),
+          ...(rider ? [{ spiritId: chargeTrait.id, name: rider.name }] : []),
+        ],
+      });
+    }
+  }
+
+  /* 5) 残血反打：队伍里主动换掉的人越多，收割位越强 */
+  const comeback = team.find((p) => p.traitTags.has('comeback'));
+  if (comeback) {
+    const eff = comeback.spirit.trait?.effect ?? '';
+    const per = /\+(\d+)%/.exec(eff)?.[1];
+    const sacker = team.find((p) => p.id !== comeback.id && p.stats.spe < comeback.stats.spe) ?? null;
+    out.push({
+      title: `${comeback.spirit.trait?.name ?? '残血反打'} → ${shortName(comeback.name)}`,
+      text:
+        `${memberName(comeback.id)} 的「${comeback.spirit.trait?.name}」：${effectBrief(eff, 58)}；` +
+        (sacker
+          ? `队里 ${memberName(sacker.id)} 速度 ${sacker.stats.spe}，先上去换掉一只，${memberName(comeback.id)} 入场时就是 +${per ?? '—'}% 双攻起步。`
+          : '前面的队友每换掉一只，它入场就多叠一层。'),
+      spiritIds: [comeback.id, ...(sacker ? [sacker.id] : [])],
+      skills: [],
+    });
+  }
+
+  /* 6) 天气联动：开天气的人 + 特性写明天气生效的人 */
+  if (arch.weather && teamHasWeather) {
+    const setter = team.find((p) => weatherSetterSkills(p, arch.weather!).length > 0);
+    const skill = setter ? weatherSetterSkills(setter.spirit, arch.weather!)[0] : null;
+    const users = team.filter((p) => p.traitText.includes(arch.weather!));
+    if (setter && skill && users.length) {
+      out.push({
+        title: `${skill.name} → ${users.map((p) => p.spirit.trait?.name).join('、')}`,
+        text: `${memberName(setter.id)} 的「${skill.name}」（${skill.type}·能耗 ${skill.energy ?? '—'}）把天气改成${arch.weather}：${effectBrief(
+          skill.effect,
+          40,
+        )}；${users
+          .map((p) => `${memberName(p.id)} 的「${p.spirit.trait?.name}」`)
+          .join('、')}都写明要在${arch.weather}下才生效。`,
+        spiritIds: [setter.id, ...users.map((p) => p.id)],
+        skills: [{ spiritId: setter.id, name: skill.name }],
+      });
+    }
+  }
+
+  /* 7) 换人惩罚：把对手送回去，特性立刻生效 */
+  const switchTrait = team.find((p) => p.traitTags.has('switch'));
+  if (switchTrait) {
+    const force = team
+      .map((p) => ({
+        p,
+        sk: (picks.get(p.id)?.chosen ?? []).find((sk) => /敌方精灵返场|紧急脱离|应对状态：回合结束使敌方/.test(sk.effect ?? '')),
+      }))
+      .find((x) => x.sk);
+    out.push({
+      title: `${switchTrait.spirit.trait?.name ?? '换人惩罚'}${force ? ` × ${force.sk!.name}` : ''}`,
+      text:
+        `${memberName(switchTrait.id)} 的「${switchTrait.spirit.trait?.name}」：${effectBrief(switchTrait.spirit.trait?.effect, 56)}；` +
+        (force
+          ? `${memberName(force.p.id)} 的「${force.sk!.name}」写明「${effectBrief(force.sk!.effect, 44)}」，把对手送回去正好喂到这条特性。`
+          : '逼对手留在场上吃完输出，换人反而更亏。'),
+      spiritIds: [switchTrait.id, ...(force ? [force.p.id] : [])],
+      skills: force ? [{ spiritId: force.p.id, name: force.sk!.name }] : [],
+    });
+  }
+
+  /* 8) 迸发联动：特性写「迸发延长」，技能写「迸发」 */
+  const burstTrait = team.find((p) => /迸发/.test(p.spirit.trait?.effect ?? ''));
+  if (burstTrait) {
+    const burstSkill = (picks.get(burstTrait.id)?.chosen ?? []).find((sk) => /迸发/.test(sk.effect ?? ''));
+    if (burstSkill) {
+      out.push({
+        title: `${burstTrait.spirit.trait?.name ?? '迸发'} × ${burstSkill.name}`,
+        text:
+          `${memberName(burstTrait.id)} 的「${burstTrait.spirit.trait?.name}」：${effectCore(
+            burstTrait.spirit.trait?.effect,
+            54,
+          )}；它带的「${burstSkill.name}」（${burstSkill.type}·能耗 ${burstSkill.energy ?? '—'}）写明「${effectCore(
+            burstSkill.effect,
+            40,
+          )}」，这层迸发会被特性多留一段时间。`,
+        spiritIds: [burstTrait.id],
+        skills: [{ spiritId: burstTrait.id, name: burstSkill.name }],
+      });
+    }
+  }
+
+  /* 8.5) 属性施法联动：「使用X系技能后」的特性 + 同系技能 */
+  for (const p of team) {
+    const eff = p.spirit.trait?.effect ?? '';
+    const m = /使用([^。；]{1,3})系技能后/.exec(eff);
+    if (!m || /失去\d+能量/.test(eff)) continue;
+    const need = m[1];
+    const sk = (picks.get(p.id)?.chosen ?? []).find((s) => s.type === need);
+    if (!sk) continue;
+    out.push({
+      title: `${p.spirit.trait?.name ?? '施法联动'} → ${sk.name}`,
+      text:
+        `${memberName(p.id)} 的「${p.spirit.trait?.name}」：${effectCore(eff, 58)}；它带的「${sk.name}」（${sk.type}·威力 ${
+          sk.power ?? '—'
+        }·能耗 ${sk.energy ?? '—'}）正好是${need}系，每用一次就触发一次，越打越强。`,
+      spiritIds: [p.id],
+      skills: [{ spiritId: p.id, name: sk.name }],
+    });
+    break;
+  }
+
+  /* 8.6) 防守技能联动：特性按「每使用 N 次防御技能」叠威力 */
+  for (const p of team) {
+    const eff = p.spirit.trait?.effect ?? '';
+    const per = /每使用(\d+)次防御技能[^。；]{0,16}威力\+(\d+)%/.exec(eff);
+    if (!per) continue;
+    const guards = team.filter((o) =>
+      (picks.get(o.id)?.chosen ?? []).some((sk) => /减伤\d+%/.test(sk.effect ?? '')),
+    );
+    if (guards.length < 2) continue;
+    const need = Number(per[1]);
+    const step = Number(per[2]);
+    const total = Math.round((guards.length / need) * step);
+    out.push({
+      title: `${p.spirit.trait?.name ?? '防守联动'} → ${guards.length} 只减伤`,
+      text:
+        `${memberName(p.id)} 的「${p.spirit.trait?.name}」：${effectCore(eff, 58)}；推荐的 6 只里有 ${guards.length} 只带减伤技能（${joinNames(
+          guards.map((g) => shortName(g.name)),
+        )}），各用一次就是 +${total}%（原文：每 ${need} 次 +${step}%）。`,
+      spiritIds: [...new Set([p.id, ...guards.map((g) => g.id)])],
+      skills: [],
+    });
+    break;
+  }
+
+  /* 9) 打击面互补：主攻打不动的属性，交给队友的另一属性技能 */
+  const heavy = [...team].sort((a, b) => b.maxPower * b.mainAtk - a.maxPower * a.mainAtk)[0];
+  const heavyPick = picks.get(heavy.id)!;
+  const heavyPrimary = heavyPick.primary;
+  if (heavyPrimary) {
+    const hole = TYPE_ORDER.map((t) => ({ t, mul: matchup(heavyPrimary.type, [t]).multiplier }))
+      .filter((x) => x.mul <= 1)
+      .map((x) => {
+        const answer = team
+          .filter((p) => p.id !== heavy.id)
+          .map((p) => ({ p, sk: pickedDamagers(p.id, picks).find((sk) => matchup(sk.type, [x.t]).multiplier >= 2) }))
+          .find((y) => y.sk);
+        return answer ? { ...x, answer } : null;
+      })
+      .find(Boolean);
+    if (hole && hole.answer) {
+      out.push({
+        title: `${heavyPrimary.name} 只有 ×1 → ${hole.answer.sk!.name}`,
+        text:
+          `${memberName(heavy.id)} 的主招「${heavyPrimary.name}」（${heavyPrimary.type}·威力 ${heavyPrimary.power}）对 ${hole.t}系只有 ${mulLabel(
+            hole.mul,
+          )}；${memberName(hole.answer.p.id)} 的「${hole.answer.sk!.name}」（${hole.answer.sk!.type}·威力 ${
+            hole.answer.sk!.power
+          }）对 ${hole.t}系是 ${mulLabel(matchup(hole.answer.sk!.type, [hole.t]).multiplier)}——遇到 ${hole.t}系就换人，不要用主招硬顶。`,
+        spiritIds: [heavy.id, hole.answer.p.id],
+        skills: [
+          { spiritId: heavy.id, name: heavyPrimary.name },
+          { spiritId: hole.answer.p.id, name: hole.answer.sk!.name },
+        ],
+      });
+    }
+  }
+
+  // 每个标题只留一次；最多 4 条，至少 2 条
+  const seen = new Set<string>();
+  const unique = out.filter((s) => {
+    if (seen.has(s.title)) return false;
+    seen.add(s.title);
+    return Boolean(s.text);
+  });
+  return unique.slice(0, 4);
+}
+
+/** 完整战术配合链：开局 → 第一阶段 → 中期 → 后期 → 逆风局 */
+function buildBattlePlan(
+  team: Profile[],
+  roles: Map<string, RoleName>,
+  picks: Map<string, SkillPick>,
+  leadPlan: LeadPlan,
+  synergies: SkillSynergy[],
+  e: Eval,
+): BattlePhase[] {
+  const byId = (id: string) => team.find((p) => p.id === id) ?? team[0];
+  const nameOf = (p: Profile) => shortName(p.name);
+  const pickOf = (p: Profile) => picks.get(p.id)!;
+  const lead = byId(leadPlan.spiritId);
+  const leadPick = pickOf(lead);
+  const open1 = leadPlan.openers[0] ? leadPick.chosen.find((sk) => sk.name === leadPlan.openers[0].name) : null;
+  const open2 = leadPlan.openers[1] ? leadPick.chosen.find((sk) => sk.name === leadPlan.openers[1].name) : null;
+  const core = team.find((p) => roles.get(p.id) === '核心输出') ?? [...team].sort((a, b) => b.maxPower - a.maxPower)[0];
+  const corePick = pickOf(core);
+  const tank = team.find((p) => roles.get(p.id) === '承伤') ?? [...team].sort((a, b) => b.bulk - a.bulk)[0];
+  const closer = team.find((p) => roles.get(p.id) === '收割') ?? [...team].sort((a, b) => b.stats.spe - a.stats.spe)[0];
+  const closerPick = pickOf(closer);
+  const closerFinisher =
+    [...closerPick.chosen].filter((sk) => isDamaging(sk)).sort((a, b) => (b.power ?? 0) - (a.power ?? 0))[0] ?? null;
+  const closerPriority = closerPick.chosen.find((sk) => /先手\+\d|迅捷/.test(sk.effect ?? ''));
+  const taxTrait = team.find((p) => p.traitTags.has('tax'));
+  const leadWorst = [...lead.weak].sort((a, b) => lead.defMul[TI.get(b)!] - lead.defMul[TI.get(a)!])[0];
+  const answerFor = (type: string) =>
+    [...team]
+      .filter((p) => p.defMul[TI.get(type)!] <= 0.5)
+      .sort((a, b) => a.defMul[TI.get(type)!] - b.defMul[TI.get(type)!])[0];
+
+  /* 1. 开局 */
+  const openingText =
+    `首发 ${nameOf(lead)}（速度 ${lead.stats.spe}，${lead.types.join('/')}）。` +
+    (open1
+      ? `第一手「${open1.name}」（${open1.type}·${open1.category}${open1.power ? `·威力 ${open1.power}` : ''}${isChargeSkill(open1) ? '·蓄力' : ''}${energyTag(open1)}）：${effectCore(
+          open1.effect,
+          42,
+        )}。`
+      : '') +
+    (open2 && open2 !== open1
+      ? `第二手「${open2.name}」（${open2.type}·${open2.category}${open2.power ? `·威力 ${open2.power}` : ''}${energyTag(open2)}）。`
+      : '') +
+    leadPlan.caution;
+
+  /* 2. 第一阶段：用前 2–3 回合建立优势 */
+  const coverageSkill =
+    leadPick.chosen.find((sk) => sk !== leadPick.primary && isDamaging(sk)) ??
+    corePick.chosen.find((sk) => sk !== corePick.primary && isDamaging(sk)) ??
+    null;
+  const coverageOwner = coverageSkill && leadPick.chosen.includes(coverageSkill) ? lead : core;
+  const advantageText =
+    `前 2–3 回合只做一件事：把对手逼到换人。${nameOf(lead)} 抢到先手后先${open1 ? `用「${open1.name}」` : '出手'}` +
+    (coverageSkill
+      ? `，再切「${coverageSkill.name}」（${coverageSkill.type}·威力 ${coverageSkill.power ?? '—'}${energyTag(
+          coverageSkill,
+        )}）打主招打不动的属性；`
+      : '，把主招留给对手换上来的那只；') +
+    `主攻 ${nameOf(core)} 的「${corePick.primary?.name ?? '—'}」（威力 ${corePick.primary?.power ?? '—'}）不要浪费在已经残血的那只身上。` +
+    (taxTrait
+      ? `对手每回合还被 ${nameOf(taxTrait)} 的「${taxTrait.spirit.trait?.name}」多收能量，拖到第 3 回合它的高耗技能就打不出来。`
+      : '');
+
+  /* 3. 中期：换人 + 联动 */
+  const switchRows = e.sharedWeak.slice(0, 2).map((w) => {
+    const ans = answerFor(w.type);
+    return ans
+      ? `${w.type}系（对 ${joinNames(w.members.map(shortName), 2)}是 ${mulLabel(w.maxMul)}）换 ${nameOf(ans)}（${mulLabel(
+          ans.defMul[TI.get(w.type)!],
+        )}）`
+      : `${w.type}系队里没人抗，只能先手换血`;
+  });
+  const leadRow =
+    leadWorst && !e.sharedWeak.slice(0, 2).some((w) => w.type === leadWorst)
+      ? `首发 ${nameOf(lead)} 遇到 ${leadWorst}系（${mulLabel(lead.defMul[TI.get(leadWorst)!])}）时${
+          answerFor(leadWorst) ? `换 ${nameOf(answerFor(leadWorst)!)} 接` : '直接撤'
+        }`
+      : '';
+  const midText =
+    (switchRows.length ? `中期的换人只有两条线：${switchRows.join('；')}。` : '') +
+    (leadRow ? `${leadRow}。` : '') +
+    (synergies.length ? `换人不是单纯避伤害，而是接上「${synergies[0].title}」这条联动。` : '') +
+    `每次换人前先看对手能量：${taxTrait ? `对手被「${taxTrait.spirit.trait?.name}」压着、` : ''}高耗技能打不出来时再上 ${nameOf(core)}。`;
+
+  /* 4. 后期：收割 */
+  const lateText =
+    `剩 1–2 只时把 ${nameOf(closer)} 留到最后（速度 ${closer.stats.spe}）` +
+    (closerPriority
+      ? `，「${closerPriority.name}」带先手，残血对手先手也跑不掉；`
+      : closer.stats.spe < 100
+        ? `，它比对面慢，收尾前必须先把对面的先手位换掉；`
+        : '；') +
+    (closerFinisher
+      ? `终结技「${closerFinisher.name}」（${closerFinisher.type}·威力 ${closerFinisher.power}${energyTag(
+          closerFinisher,
+        )}）${effectCore(closerFinisher.effect, 40)}。`
+      : '') +
+    (closer.traitTags.has('comeback')
+      ? `到这一步「${closer.spirit.trait?.name}」已经按力竭数量叠满，越低血越难处理。`
+      : '');
+
+  /* 5. 逆风局 */
+  const threat = e.sharedWeak[0]?.type ?? leadWorst ?? null;
+  const answer = threat ? answerFor(threat) : null;
+  const hitsThreat = (p: Profile) =>
+    p.id !== lead.id && pickedDamagers(p.id, picks).some((sk) => matchup(sk.type, [threat!]).multiplier >= 2);
+  const counter = threat
+    ? team.find((p) => p.id !== tank.id && hitsThreat(p)) ??
+      team.find((p) => p.id !== lead.id && pickedDamagers(p.id, picks).some((sk) => matchup(sk.type, [threat!]).multiplier >= 2)) ??
+      null
+    : null;
+  const counterSkill = counter
+    ? pickedDamagers(counter.id, picks).find((sk) => matchup(sk.type, [threat!]).multiplier >= 2) ?? null
+    : null;
+  const comebackText =
+    (leadWorst
+      ? `首发被克：${nameOf(lead)} 怕 ${leadWorst}系（${mulLabel(lead.defMul[TI.get(leadWorst)!])}），对面若${leadWorst}系开场，${
+          answerFor(leadWorst) ? `直接上 ${nameOf(answerFor(leadWorst)!)}（${mulLabel(answerFor(leadWorst)!.defMul[TI.get(leadWorst)!])}）而不是硬吃` : '别硬留场'
+        }。`
+      : '首发没有 ×2 弱点，逆风主要来自被先手压速。') +
+    `${nameOf(tank)} 生命 ${tank.stats.hp}／物防 ${tank.stats.def}／魔防 ${tank.stats.spd}，承伤位，用来吃一轮爆发把节奏换回来。` +
+    (counter && counterSkill
+      ? `反制位 ${nameOf(counter)}：对手把 ${threat}系打出来时，它的「${counterSkill.name}」能反打 ${mulLabel(
+          matchup(counterSkill.type, [threat!]).multiplier,
+        )}，等对面 ${threat}系站场再上。`
+      : `止损思路：先保 ${nameOf(tank)} 不掉，再用 ${nameOf(closer)} 的先手/终结技换回来。`);
+
+  const refs = (spirits: Profile[], skills: { spiritId: string; name: string }[]) => ({
+    spiritIds: [...new Set(spirits.map((p) => p.id))],
+    skills,
+  });
+
+  return [
+    {
+      key: 'opening',
+      label: '开局',
+      title: `${nameOf(lead)} 首发`,
+      text: openingText,
+      ...refs(
+        [lead],
+        [open1, open2]
+          .filter((sk): sk is ResolvedSkill => Boolean(sk))
+          .map((sk) => ({ spiritId: lead.id, name: sk.name })),
+      ),
+    },
+    {
+      key: 'advantage',
+      label: '第一阶段',
+      title: '把节奏压在自己这边',
+      text: advantageText,
+      ...refs(
+        [lead, core, ...(coverageOwner ? [coverageOwner] : []), ...(taxTrait ? [taxTrait] : [])],
+        [
+          ...(open1 ? [{ spiritId: lead.id, name: open1.name }] : []),
+          ...(coverageSkill && coverageOwner
+            ? [{ spiritId: coverageOwner.id, name: coverageSkill.name }]
+            : []),
+          ...(corePick.primary ? [{ spiritId: core.id, name: corePick.primary.name }] : []),
+        ],
+      ),
+    },
+    {
+      key: 'mid',
+      label: '中期',
+      title: '换人联防与联动',
+      text: midText,
+      ...refs(
+        [lead, core, ...(answer ? [answer] : [])],
+        [],
+      ),
+    },
+    {
+      key: 'late',
+      label: '后期',
+      title: `${nameOf(closer)} 收割`,
+      text: lateText,
+      ...refs(
+        [closer],
+        [closerFinisher, closerPriority]
+          .filter((sk): sk is ResolvedSkill => Boolean(sk))
+          .map((sk) => ({ spiritId: closer.id, name: sk!.name })),
+      ),
+    },
+    {
+      key: 'comeback',
+      label: '逆风局',
+      title: '首发劣势与止损',
+      text: comebackText,
+      ...refs(
+        [lead, tank, ...(counter ? [counter] : [])],
+        counterSkill && counter ? [{ spiritId: counter.id, name: counterSkill.name }] : [],
+      ),
+    },
+  ];
 }
 
 /** 一个队伍的完整文案：每个数字都是现算的，每句机制都能在图鉴原文里找到 */
@@ -1252,8 +1994,8 @@ function buildTeam(
             ? `${domType}系${arch.short}`
             : arch.short;
 
-  const skillPicks = new Map<string, { refs: PresetSkillRef[]; primary: ResolvedSkill | null }>();
-  for (const p of ordered) skillPicks.set(p.id, pickSkills(p));
+  const skillPicks = new Map<string, SkillPick>();
+  for (const p of ordered) skillPicks.set(p.id, pickSkillsFor(p, roles.get(p.id) ?? '收割'));
 
   const members: PresetMember[] = ordered.map((p) => {
     const role = roles.get(p.id) ?? '收割';
@@ -1274,8 +2016,10 @@ function buildTeam(
     return {
       spiritId: p.id,
       role,
-      note: noteForRole(p, role, pick.primary, control),
+      duty: DUTY_BY_ROLE[role],
+      note: noteForRole(p, role, pick.primary, control, pick.chosen[2] ?? null),
       skills: pick.refs,
+      traitSynergy: traitSynergyFor(p, team, arch),
     };
   });
 
@@ -1512,6 +2256,10 @@ function buildTeam(
     riskParts.push(`本轮与前一轮重叠 ${cand.bannedHits} 只：为了让强度不掉，保留了上一轮已经验证过的成员。`);
   }
 
+  const leadPlan = buildLead(team, roles, skillPicks);
+  const synergies = buildSynergies(team, skillPicks, e, arch, teamHasWeather);
+  const battlePlan = buildBattlePlan(team, roles, skillPicks, leadPlan, synergies, e);
+
   const preset: TeamPreset = {
     id: `r${round}-${arch.id}`,
     name,
@@ -1532,6 +2280,9 @@ function buildTeam(
     risk: riskParts.join(' '),
     chain,
     members,
+    lead: leadPlan,
+    synergies,
+    battlePlan,
   };
   return { preset, e };
 }
@@ -1544,13 +2295,15 @@ interface Args {
   dry: boolean;
   now: Date;
   seed: number | null;
+  refresh: boolean;
 }
 
 function parseArgs(argv: string[]): Args {
-  const args: Args = { round: null, ifDue: false, dry: false, now: new Date(), seed: null };
+  const args: Args = { round: null, ifDue: false, dry: false, now: new Date(), seed: null, refresh: false };
   for (let i = 0; i < argv.length; i += 1) {
     const a = argv[i];
     if (a === '--if-due') args.ifDue = true;
+    else if (a === '--refresh') args.refresh = true;
     else if (a === '--dry') args.dry = true;
     else if (a === '--round') args.round = Number(argv[++i]);
     else if (a === '--now') args.now = new Date(argv[++i]);
@@ -1567,10 +2320,123 @@ function readJson<T>(file: string): T | null {
   }
 }
 
+/* ------------------------------------------------------------------ 重写战术手册（不改阵容、不改时间） */
+
+/** 从当前阵容反推战术原型：天气队从前场技能取天气，纯属性队取共同属性 */
+function archOfPreset(preset: TeamPreset, team: Profile[]): Arch | null {
+  if (preset.archetype === 'weather') {
+    let weather: string | null = null;
+    for (const p of team) {
+      for (const sk of skillsOf(p.spirit)) {
+        const hit = /将天气改为(雨天|暴风雪|沙暴|雷鸣)/.exec(sk.effect ?? '');
+        if (hit) {
+          weather = hit[1];
+          break;
+        }
+      }
+      if (weather) break;
+    }
+    return weather ? weatherArchetype(weather, () => 0.5) : null;
+  }
+  if (preset.archetype === 'mono') {
+    const counts = new Map<string, number>();
+    for (const p of team) for (const t of new Set(p.types)) counts.set(t, (counts.get(t) ?? 0) + 1);
+    const type = [...counts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0];
+    return type ? monoArchetype(type) : null;
+  }
+  return BASE_ARCHETYPES.find((a) => a.id === preset.archetype) ?? null;
+}
+
+/**
+ * npm run rotate:teams -- --refresh
+ * 只重算文案与战术手册（起手、4 技能、联动、5 阶段），阵容与 nextRotationAt 保持原样。
+ */
+function refreshCurrent(rotation: TeamRotationFile, history: RotationHistoryFile): boolean {
+  const previous = history.rounds.filter((r) => r.round < rotation.round).sort((a, b) => b.round - a.round)[0];
+  const banned = new Set(
+    (previous?.spiritIds ?? []).map((id) => BY_ID.get(id)?.base ?? '').filter(Boolean),
+  );
+  const rebuilt: TeamPreset[] = [];
+
+  for (const preset of rotation.teams) {
+    const team = preset.members
+      .map((m) => BY_ID.get(m.spiritId))
+      .filter((p): p is Profile => Boolean(p));
+    if (team.length !== 6) {
+      console.error(`[refresh] ${preset.name} 只找到 ${team.length} 只精灵，中止。`);
+      return false;
+    }
+    const arch = archOfPreset(preset, team);
+    if (!arch) {
+      console.error(`[refresh] ${preset.name} 的战术原型 ${preset.archetype} 无法还原，中止。`);
+      return false;
+    }
+    const e = evaluate(team, arch.weight);
+    const next = buildTeam(
+      arch,
+      {
+        team,
+        e,
+        score: 0,
+        bannedHits: team.filter((p) => banned.has(p.base)).length,
+      },
+      rotation.round,
+      banned,
+    ).preset;
+    const before = preset.members.map((m) => m.spiritId).sort().join(',');
+    const after = next.members.map((m) => m.spiritId).sort().join(',');
+    if (before !== after) {
+      console.error(`[refresh] ${preset.name} 重算后成员变了（${before} → ${after}），中止以免换掉用户正在看的阵容。`);
+      return false;
+    }
+    rebuilt.push(next);
+    console.log(`· ${next.name}：${next.members.length} 只 / ${next.members.reduce((n, m) => n + m.skills.length, 0)} 个技能 / ${next.synergies.length} 条联动 / ${next.battlePlan.length} 个阶段`);
+  }
+
+  const dayKey = rotation.updatedAt.slice(0, 10);
+  const today = beijingIso(new Date()).slice(0, 10);
+  if (dayKey !== today) {
+    console.log(`[refresh] 注意：当前轮更新于 ${rotation.updatedAt}，只重写文案，不改时间。`);
+  }
+
+  const file: TeamRotationFile = { ...rotation, teams: rebuilt };
+  fs.writeFileSync(ROTATION_PATH, `${JSON.stringify(file, null, 1)}\n`);
+  const rounds = history.rounds.map((r) =>
+    r.round === rotation.round
+      ? {
+          ...r,
+          teams: rebuilt.map((t) => ({
+            id: t.id,
+            name: t.name,
+            category: t.category,
+            archetype: t.archetype,
+            archetypeLabel: t.archetypeLabel,
+            spiritIds: t.members.map((m) => m.spiritId),
+            spiritNames: t.members.map((m) => BY_ID.get(m.spiritId)?.name ?? m.spiritId),
+          })),
+          spiritIds: rebuilt.flatMap((t) => t.members.map((m) => m.spiritId)),
+        }
+      : r,
+  );
+  fs.writeFileSync(HISTORY_PATH, `${JSON.stringify({ rounds }, null, 1)}\n`);
+  console.log(`\n已重写第 ${rotation.round} 轮的战术手册（阵容与 nextRotationAt=${rotation.nextRotationAt} 未变）。`);
+  return true;
+}
+
 function main() {
   const args = parseArgs(process.argv.slice(2));
   const rotation = readJson<TeamRotationFile>(ROTATION_PATH);
   const history = readJson<RotationHistoryFile>(HISTORY_PATH) ?? { rounds: [] };
+
+  if (args.refresh) {
+    if (!rotation) {
+      console.error('[refresh] 没有读到 team-rotation.json，无法重写。');
+      process.exit(1);
+    }
+    const ok = refreshCurrent(rotation, history);
+    if (!ok) process.exit(1);
+    return;
+  }
 
   if (args.ifDue && rotation) {
     const due = new Date(rotation.nextRotationAt).getTime();

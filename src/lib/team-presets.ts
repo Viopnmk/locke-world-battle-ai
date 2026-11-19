@@ -83,6 +83,27 @@ export function presetFactBlock(preset: TeamPreset): string {
     `站内「阵容推荐」第 ${TEAM_ROTATION.round} 轮预设：${preset.name}（${CATEGORY_LABEL[preset.category]}·${preset.sub}）。出现于 ${TEAM_ROTATION.updatedAt}，${TEAM_ROTATION.nextRotationAt} 换下一轮。用户是按这套打法把阵容导入对战的，请按这套机制解释，不要替换成别的体系。`,
   );
   lines.push(`配队思路：${preset.plan.join(' ')}`);
+  if (preset.lead) {
+    const lead = presetSpirit(preset.lead.spiritId);
+    const openers = preset.lead.openers
+      .map((op) => `${op.name}（${op.why}）`)
+      .join('；');
+    lines.push(
+      `起手第一只：${lead?.name ?? preset.lead.spiritId}。${preset.lead.why}开场：${openers}。首发风险：${preset.lead.caution}`,
+    );
+  }
+  if (preset.synergies?.length) {
+    lines.push(
+      `核心技能联动：${preset.synergies.map((s) => `「${s.title}」${s.text}`).join(' ')}`,
+    );
+  }
+  if (preset.battlePlan?.length) {
+    lines.push(
+      `五阶段战术链：${preset.battlePlan
+        .map((p) => `${p.label}·${p.title}：${p.text}`)
+        .join(' ')}`,
+    );
+  }
   const chain = preset.chain
     .map((step, i) => `${i + 1}. ${presetSpirit(step.spiritId)?.name ?? step.spiritId}：${step.text}`)
     .join(' ');

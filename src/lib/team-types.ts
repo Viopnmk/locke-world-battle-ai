@@ -23,14 +23,56 @@ export interface PresetSkillRef {
   name: string;
   /** 为什么要带这个技能（真实机制） */
   why: string;
+  /** 技能位：主攻 / 补盲 / 机制 / 防守（由生成脚本按角色算出来） */
+  slot?: string;
 }
 
 export interface PresetMember {
   spiritId: string;
   /** 先手 / 核心输出 / 控制 / 辅助 / 承伤 / 收割 */
   role: string;
+  /** 角色在队里的具体职责，例如「首发抢节奏」「属性联防盾」 */
+  duty?: string;
   note: string;
+  /** 4 个推荐技能，全部来自这只精灵的学习面 */
   skills: PresetSkillRef[];
+  /** 特性在本队里的用法（图鉴原文 + 队内联动） */
+  traitSynergy?: string;
+}
+
+/** 起手第一只：谁首发、为什么、开场打哪两招 */
+export interface LeadPlan {
+  spiritId: string;
+  /** 为什么由它起手（速度 / 先手 / 强化 / 弱点数量） */
+  why: string;
+  /** 开场两招：先做什么、再做什么 */
+  openers: PresetSkillRef[];
+  /** 首发要盯的换人点 */
+  caution: string;
+}
+
+/** 核心技能联动：队内两条真实的机制如何接上 */
+export interface SkillSynergy {
+  /** 联动标题，例如「冻结 → 极寒领域」 */
+  title: string;
+  /** 具体到技能名、特性名与数值的说明 */
+  text: string;
+  /** 参与的队内精灵 */
+  spiritIds: string[];
+  /** 引用的真实技能 */
+  skills: { spiritId: string; name: string }[];
+}
+
+/** 完整战术配合链的 5 个阶段 */
+export interface BattlePhase {
+  key: 'opening' | 'advantage' | 'mid' | 'late' | 'comeback';
+  /** 开局 / 第一阶段 / 中期 / 后期 / 逆风局 */
+  label: string;
+  /** 这一阶段的一句话主题 */
+  title: string;
+  text: string;
+  spiritIds: string[];
+  skills: { spiritId: string; name: string }[];
 }
 
 export interface ChainStep {
@@ -57,6 +99,12 @@ export interface TeamPreset {
   risk: string;
   chain: ChainStep[];
   members: PresetMember[];
+  /** 起手第一只（用户第一个问的问题） */
+  lead: LeadPlan;
+  /** 核心技能联动关系 */
+  synergies: SkillSynergy[];
+  /** 完整团队战术配合链：开局 → 第一阶段 → 中期 → 后期 → 逆风局 */
+  battlePlan: BattlePhase[];
 }
 
 export interface RotationTeamMeta {
