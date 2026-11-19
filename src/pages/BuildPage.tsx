@@ -214,35 +214,43 @@ export function BuildPage({ spiritId, onPick }: Props) {
         <section className="build-row">
           <h3 className="build-row__title">
             <span className="build-row__dot" aria-hidden="true" />
-            改血脉 <small>血脉技能 Lv.{guide.bloodline.main.level ?? 15} 解锁</small>
+            改血脉{' '}
+            <small>
+              {guide.bloodline.main.equipped
+                ? `只带 1 个 · 占第 ${guide.bloodline.main.slotIndex} 格 · Lv.${guide.bloodline.main.level ?? 15} 解锁`
+                : '本方案不改血脉 · 不带血脉技能'}
+            </small>
           </h3>
-          <div className="blood-main">
-            <span className={`blood-tag blood-tag--${guide.bloodline.main.kind === '功能' ? 'utility' : 'damage'}`}>
-              {guide.bloodline.main.blood}血脉
-            </span>
-            <span className="blood-skill">
-              <TypeGlyph type={guide.bloodline.main.skill.type} />
-              <strong>{guide.bloodline.main.skill.name}</strong>
-              <small>
-                {guide.bloodline.main.skill.category}
-                {isDamaging(guide.bloodline.main.skill)
-                  ? ` · 威力 ${guide.bloodline.main.skill.power} / 能耗 ${guide.bloodline.main.skill.energy}`
-                  : ' · 变化'}
-              </small>
-            </span>
-          </div>
+          {guide.bloodline.main.equipped ? (
+            <div className="blood-main">
+              <span className={`blood-tag blood-tag--${guide.bloodline.main.kind === '功能' ? 'utility' : 'damage'}`}>
+                {guide.bloodline.main.blood}血脉
+              </span>
+              <span className="blood-skill">
+                <TypeGlyph type={guide.bloodline.main.skill.type} />
+                <strong>{guide.bloodline.main.skill.name}</strong>
+                <small>
+                  {guide.bloodline.main.skill.category}
+                  {isDamaging(guide.bloodline.main.skill)
+                    ? ` · 威力 ${guide.bloodline.main.skill.power} / 能耗 ${guide.bloodline.main.skill.energy}`
+                    : ' · 变化'}
+                </small>
+              </span>
+            </div>
+          ) : (
+            <div className="blood-main blood-main--none">
+              <span className="blood-tag blood-tag--none">保持普通血脉</span>
+              <span className="blood-skill">
+                <TypeGlyph type={guide.bloodline.main.skill.type} />
+                <strong>不走血脉技能</strong>
+                <small>
+                  最高收益只到「{guide.bloodline.main.skill.name}」（{guide.bloodline.main.blood}血脉），
+                  不如现技能，不占技能位
+                </small>
+              </span>
+            </div>
+          )}
           <p className="build-reason">{guide.bloodline.explanation}</p>
-          <div className="blood-options">
-            {guide.bloodline.options
-              .filter((o) => o.skill.id !== guide.bloodline.main.skill.id)
-              .slice(0, 3)
-              .map((o) => (
-                <span key={`${o.blood}-${o.skill.id}`} className="blood-option">
-                  <TypeGlyph type={o.skill.type} size={12} />
-                  {o.blood} · {o.skill.name}
-                </span>
-              ))}
-          </div>
           <p className="build-note">{guide.bloodline.note}</p>
         </section>
 
@@ -318,7 +326,7 @@ export function BuildPage({ spiritId, onPick }: Props) {
         <ul>
           <li>技能：按本系主攻 → 换属性副攻 → 补盲 → 变化排序，只用它自己学习面里的技能，评分 = 威力（含能耗修正）× 本系 × 类别 × 属性克制收益 × 特性协同。</li>
           <li>性格：只改两项，+10% 给主输出或速度/生命，-10% 给用不上的那项；个体值只点 3 项，不摊薄。</li>
-          <li>血脉：每个学习面在 18 系别血脉 + 普通血脉下各继承一个血脉技能（Wiki 模块原文），按流派挑最贴的那个。</li>
+          <li>血脉：一只精灵只有一个血脉，18 系别血脉 + 普通血脉的 19 个血脉技能只能选 1 个；全库先按同一条规则择优保留 1 个，其余血脉技能直接不进候选池，四个技能位里不会再出现第二个血脉技能。</li>
           <li>数据：BWIKI「精灵列表」「性格」「技能」「血脉技能」模块，抓取于 {meta.fetchedAt.slice(0, 10)}，与图鉴页同一套 JSON。</li>
         </ul>
       </section>

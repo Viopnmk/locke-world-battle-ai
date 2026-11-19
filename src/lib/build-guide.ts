@@ -14,9 +14,12 @@ import bloodlinesData from '../data/bloodlines.json';
 import naturesData from '../data/natures.json';
 import { spiritMetrics } from './analysis';
 import type { StatKey } from './analysis';
+import { BLOODLINE_RULE_NOTE, BLOODLINE_SKILL_LIMIT } from './equip-rules';
 import { skillById, skillsOf, spirits } from './spirits';
 import { matchup, TYPE_ORDER } from './typeChart';
 import type { BloodlineTable, Nature, NatureTable, ResolvedSkill, Skill, Spirit } from './types';
+
+export { BLOODLINE_SKILL_LIMIT, BLOODLINE_RULE_NOTE };
 
 export const natureTable = naturesData as unknown as NatureTable;
 export const natures: Nature[] = natureTable.rows;
@@ -90,7 +93,7 @@ function damageValue(sk: Skill, spirit: Spirit, mainCat: string, preset: PresetK
   const stab = spirit.type.includes(sk.type) ? 1.25 : 1;
   const catFit = sk.category === mainCat ? 1 : 0.55;
   const cov = Math.max(0.5, 1 + (offenceProfile(sk.type).mean - 1) * 0.9);
-  const charge = /蓄力/.test(sk.effect) ? 0.8 : 1;
+  const charge = /蓄力/.test(sk.effect) ? 0.6 : 1;
   const styleFit = preset === 'burst' ? 1 : 0.94;
   /* 威力是主项，能耗做修正：高威力 + 低能耗（本作以能耗换威力）都加分 */
   const volume = power * (1 + 0.45 * (1 - Math.min(energy, 8) / 8));
@@ -132,6 +135,77 @@ function utilityValue(sk: Skill, preset: PresetKey, spirit?: Spirit): number {
   return score * (preset === 'bulk' ? 1.45 : 1.05);
 }
 
+/* ------------------------------------------------------------------ 血脉互斥 */
+
+/* 硬规则（同一套配招最多 1 个血脉技能）的口径与说明集中在 src/lib/equip-rules.ts，
+   这里只负责：在 19 个血脉候选里挑出唯一一个最优，其余血脉技能不进候选池。 */
+
+/** 这一招能补上几个「本体属性打不出 ≥2 倍」的目标属性。 */
+function coverageGainOf(spirit: Spirit, sk: Skill): number {
+  if (!isDamaging(sk)) return 0;
+  const ownTypes = spirit.type.filter(Boolean);
+  return TYPE_ORDER.filter((def) => {
+    const own = ownTypes.reduce((acc, t) => Math.max(acc, matchup(t, [def]).multiplier), 0);
+    return own < 2 && matchup(sk.type, [def]).multiplier >= 2;
+  }).length;
+}
+
+interface BloodOption {
+  blood: string;
+  skill: Skill;
+  level: number | null;
+  kind: BloodPick['kind'];
+  value: number;
+  gain: number;
+  reason: string;
+}
+
+/**
+ * 这只精灵在 18 系别血脉 + 普通血脉下能拿到的全部血脉技能，逐个打分后从高到低排序。
+ * 打分口径（全部由图鉴原值算出）：属性本系 ×1.25、物理/魔法定位、威力与能耗、
+ * 克制面（能补几个本体打不动的属性）、特性关键词协同、变化技能的功能权重。
+ */
+function bloodCandidates(spirit: Spirit, mainCat: '物理' | '魔法', preset: PresetKey): BloodOption[] {
+  const setName = bloodlineTable.learnset[spirit.learnset ?? ''] ?? '';
+  const set: Record<string, string> = bloodlineTable.sets[setName] ?? {};
+  const out: BloodOption[] = [];
+  for (const [blood, sid] of Object.entries(set)) {
+    const skill = skillById(sid);
+    if (!skill) continue;
+    const level = bloodlineTable.levels[blood] ?? null;
+    const damaging = isDamaging(skill);
+    const stab = spirit.type.includes(skill.type);
+    const gain = coverageGainOf(spirit, skill);
+    let value: number;
+    let kind: BloodPick['kind'];
+    if (damaging) {
+      /* 和普通技能用同一把尺子（本系已在 damageValue 里 ×1.25），再给补盲属性一点点加权 */
+      value = damageValue(skill, spirit, mainCat, preset) * (1 + 0.06 * gain);
+      kind = stab ? '本系' : '补盲';
+    } else {
+      value = utilityValue(skill, preset, spirit);
+      kind = '功能';
+    }
+    const detail = damaging
+      ? `${skill.type}系${skill.category}，威力 ${skill.power} / 能耗 ${skill.energy}`
+      : `${skill.type}系变化：${skill.effect || '—'}`;
+    const chargeNote = /蓄力/.test(skill.effect) ? '；蓄力招要占一回合换这份威力' : '';
+    const gainNote = damaging && gain > 0 && !stab ? `，补 ${gain} 个本体打不动的属性` : '';
+    const reason = damaging
+      ? stab
+        ? `改${blood}血脉拿「${skill.name}」：${detail}，本系 1.25 加成${gainNote}${chargeNote}`
+        : `改${blood}血脉拿「${skill.name}」：${detail}${gainNote}${chargeNote}`
+      : `改${blood}血脉拿「${skill.name}」：${detail}`;
+    out.push({ blood, skill, level, kind, value, gain, reason });
+  }
+  return out.sort(
+    (a, b) =>
+      b.value - a.value ||
+      (a.kind === '本系' ? 0 : 1) - (b.kind === '本系' ? 0 : 1) ||
+      (a.level ?? 99) - (b.level ?? 99),
+  );
+}
+
 /* ------------------------------------------------------------------ 性格 */
 
 function findNature(up: StatKey, down: StatKey): Nature {
@@ -170,6 +244,10 @@ export interface BloodPick {
   kind: '本系' | '补盲' | '功能';
   reason: string;
   value: number;
+  /** 这个血脉技能是否真的进了四个携带技能（false = 本方案不改血脉、不带血脉技能） */
+  equipped: boolean;
+  /** 它占的是第几格（1~4），未装备时为 null */
+  slotIndex: number | null;
 }
 
 export interface FormVariant {
@@ -189,6 +267,7 @@ export interface BuildGuide {
   slots: BuildSlot[];
   nature: { main: NaturePick; alt: NaturePick };
   ivs: IvPick[];
+  /** options 现在最多 1 个（与 main 同一个）：血脉技能互斥，不再给第二个备选 */
   bloodline: { main: BloodPick; options: BloodPick[]; note: string; explanation: string };
   variants: FormVariant[];
   summary: string[];
@@ -221,14 +300,30 @@ export function buildGuide(spirit: Spirit, preset: PresetKey = 'burst'): BuildGu
   const spdPct = m.stats.spd?.percentile ?? 0;
   const wall = preset === 'bulk' || (bulkPct >= 72 && offPct < 82);
 
-  /* ---- 技能池：同一名字只留一个（不同学习来源） */
-  const seen = new Set<string>();
-  const pool: ResolvedSkill[] = [];
-  for (const sk of skillsOf(spirit)) {
-    if (seen.has(sk.name)) continue;
-    seen.add(sk.name);
-    pool.push(sk);
-  }
+  /* ---- 技能池：同一名字只留一个（不同学习来源）
+     血脉技能互斥：19 个血脉技能里先选出唯一一个「最优」，其余血脉技能根本不进候选池，
+     所以后面的四个技能位无论怎么填，都不可能同时出现两个血脉技能。 */
+  const dedupeByName = (list: ResolvedSkill[]): ResolvedSkill[] => {
+    const seenNames = new Set<string>();
+    const out: ResolvedSkill[] = [];
+    for (const sk of list) {
+      if (seenNames.has(sk.name)) continue;
+      seenNames.add(sk.name);
+      out.push(sk);
+    }
+    return out;
+  };
+  const ownSkills = dedupeByName(skillsOf(spirit));
+  const regularPool = ownSkills.filter((sk) => sk.learn !== 2);
+  const regularNames = new Set(regularPool.map((sk) => sk.name));
+  /* 普通学习面就能学到的技能，不需要靠改血脉再拿一遍，不参与「最优秀血技能」的评比 */
+  const allBlood = bloodCandidates(spirit, mainCat, preset);
+  const bloodRanked = allBlood.filter((o) => !regularNames.has(o.skill.name));
+  const champion = bloodRanked[0] ?? null;
+  const championAsSkill: ResolvedSkill | null = champion
+    ? { ...champion.skill, learn: 2, level: champion.level ?? undefined }
+    : null;
+  const pool: ResolvedSkill[] = championAsSkill ? [...regularPool, championAsSkill] : [...regularPool];
   const damaging = pool.filter(isDamaging);
   const support = pool.filter((sk) => !isDamaging(sk));
 
@@ -242,6 +337,10 @@ export function buildGuide(spirit: Spirit, preset: PresetKey = 'burst'): BuildGu
   const slots: BuildSlot[] = [];
   const taken = new Set<string>();
   const typeUsed = new Set<string>();
+  /* 硬门禁：四个技能位里已经有一个血脉技能时，任何血脉技能都不允许再进来 */
+  const bloodInSlots = () => slots.filter((s) => s.skill.learn === 2).length;
+  const canAdd = (sk: ResolvedSkill) =>
+    !taken.has(sk.id) && !(sk.learn === 2 && bloodInSlots() >= BLOODLINE_SKILL_LIMIT);
 
   const powerText = (sk: Skill) => {
     const bits = [`威力 ${sk.power ?? '—'}`, `能耗 ${sk.energy ?? '—'}`];
@@ -249,7 +348,8 @@ export function buildGuide(spirit: Spirit, preset: PresetKey = 'burst'): BuildGu
   };
 
   /* 1) 主攻：本系里最高效的一招（评分里已含本系 1.25、类别与消耗） */
-  const primaryEntry = damageRanked.find((e) => spirit.type.includes(e.sk.type)) ?? damageRanked[0];
+  const primaryEntry = damageRanked.find((e) => canAdd(e.sk) && spirit.type.includes(e.sk.type))
+    ?? damageRanked.find((e) => canAdd(e.sk));
   if (primaryEntry) {
     const sk = primaryEntry.sk;
     const prof = offenceProfile(sk.type);
@@ -265,8 +365,8 @@ export function buildGuide(spirit: Spirit, preset: PresetKey = 'burst'): BuildGu
   }
 
   /* 2) 副攻：换一个属性，避开被抵抗的同属性堆叠 */
-  const secondaryEntry = damageRanked.find((e) => !taken.has(e.sk.id) && !typeUsed.has(e.sk.type))
-    ?? damageRanked.find((e) => !taken.has(e.sk.id));
+  const secondaryEntry = damageRanked.find((e) => canAdd(e.sk) && !typeUsed.has(e.sk.type))
+    ?? damageRanked.find((e) => canAdd(e.sk));
   if (secondaryEntry) {
     const sk = secondaryEntry.sk;
     taken.add(sk.id);
@@ -286,7 +386,7 @@ export function buildGuide(spirit: Spirit, preset: PresetKey = 'burst'): BuildGu
     return best < 1;
   });
   const coverPool = damageRanked
-    .filter((e) => !taken.has(e.sk.id))
+    .filter((e) => canAdd(e.sk))
     .map((e) => ({
       ...e,
       gain: gaps.filter((def) => matchup(e.sk.type, [def]).multiplier >= 2).length,
@@ -308,7 +408,7 @@ export function buildGuide(spirit: Spirit, preset: PresetKey = 'burst'): BuildGu
 
   /* 4) 变化：带一个最划算的状态/防御技能（特性关键词命中时更优先） */
   const supportGate = preset === 'bulk' ? 1.4 : 1.6;
-  const supportEntry = supportRanked.find((e) => e.v >= supportGate && !taken.has(e.sk.id));
+  const supportEntry = supportRanked.find((e) => e.v >= supportGate && canAdd(e.sk));
   const supportSlot: BuildSlot | null = supportEntry
     ? toSlot(
         supportEntry.sk,
@@ -321,20 +421,20 @@ export function buildGuide(spirit: Spirit, preset: PresetKey = 'burst'): BuildGu
   const queue = preset === 'bulk' ? [supportSlot, coverSlot] : [coverSlot, supportSlot];
   for (const slot of queue) {
     if (!slot || slots.length >= 4) continue;
-    if (taken.has(slot.skill.id)) continue;
+    if (!canAdd(slot.skill)) continue;
     taken.add(slot.skill.id);
     slots.push(slot);
   }
   for (const entry of damageRanked) {
     if (slots.length >= 4) break;
-    if (taken.has(entry.sk.id)) continue;
+    if (!canAdd(entry.sk)) continue;
     taken.add(entry.sk.id);
     slots.push(toSlot(entry.sk, '输出', `${entry.sk.type}系输出，${powerText(entry.sk)}`));
   }
   /* 万一攻击技能不足 4 个（理论上不会），用剩下的变化技能补位 */
   for (const entry of supportRanked) {
     if (slots.length >= 4) break;
-    if (taken.has(entry.sk.id)) continue;
+    if (!canAdd(entry.sk)) continue;
     taken.add(entry.sk.id);
     slots.push(toSlot(entry.sk, '变化', entry.sk.effect || '变化技能'));
   }
@@ -400,59 +500,60 @@ export function buildGuide(spirit: Spirit, preset: PresetKey = 'burst'): BuildGu
     pushIv('spe', spePct >= 50 ? '速度补满，先手压制的关键' : '速度补一点，追到同速段');
   }
 
-  /* ---- 改血脉 */
-  const setName = bloodlineTable.learnset[spirit.learnset ?? ''] ?? '';
-  const set: Record<string, string> = bloodlineTable.sets[setName] ?? {};
-  const options: BloodPick[] = [];
-  for (const [blood, sid] of Object.entries(set)) {
-    const skill = skillById(sid);
-    if (!skill) continue;
-    const level = bloodlineTable.levels[blood] ?? null;
-    const damagingSkill = isDamaging(skill);
-    const stab = spirit.type.includes(skill.type);
-    let value: number;
-    let kind: BloodPick['kind'];
-    if (damagingSkill) {
-      value = damageValue(skill, spirit, mainCat, preset) * (stab ? 1.3 : 1);
-      kind = stab ? '本系' : '补盲';
-    } else {
-      value = utilityValue(skill, preset, spirit) * 0.95;
-      kind = '功能';
-    }
-    const detail = damagingSkill
-      ? `${skill.type}系${skill.category}，威力 ${skill.power} / 能耗 ${skill.energy}`
-      : `${skill.type}系变化：${skill.effect || '—'}`;
-    const chargeNote = /蓄力/.test(skill.effect) ? '；蓄力招要占一回合换这份威力' : '';
-    const reason = damagingSkill
-      ? stab
-        ? `改${blood}血脉：「${skill.name}」${detail}，和本体同属性，等于白拿一招本系${chargeNote}`
-        : `改${blood}血脉：「${skill.name}」${detail}，补一条现技能池里没有的属性${chargeNote}`
-      : `改${blood}血脉：「${skill.name}」${detail}`;
-    options.push({ blood, skill, level, kind, reason, value });
-  }
-  options.sort((a, b) => b.value - a.value);
-  const mainBlood: BloodPick = options[0] ?? {
-    blood: '普通',
-    skill: pool[0],
-    level: null,
-    kind: '功能',
-    reason: 'Wiki 没有这只精灵的血脉技能表，保持默认普通血脉',
-    value: 0,
-  };
+  /* ---- 改血脉（全库唯一入口：只给一个血脉技能，其余血脉技能全部剔除） */
+  const equippedSlot = slots.findIndex((s) => s.skill.learn === 2);
+  const equipped = equippedSlot >= 0 ? slots[equippedSlot] : null;
+  const fallbackBloodSkill = ownSkills.find((sk) => sk.learn === 2) ?? regularPool[0];
+  const mainBlood: BloodPick = champion
+    ? {
+        blood: champion.blood,
+        skill: champion.skill,
+        level: champion.level,
+        kind: champion.kind,
+        reason: champion.reason,
+        value: champion.value,
+        equipped: Boolean(equipped),
+        slotIndex: equipped ? equippedSlot + 1 : null,
+      }
+    : {
+        blood: '普通',
+        skill: fallbackBloodSkill,
+        level: null,
+        kind: '功能',
+        reason: 'Wiki 没有这只精灵的血脉技能表，保持默认普通血脉',
+        value: 0,
+        equipped: false,
+        slotIndex: null,
+      };
+  const options: BloodPick[] = [mainBlood];
   const variants: FormVariant[] = spirits
     .filter((s) => baseName(s.name) === baseName(spirit.name) && s.id !== spirit.id)
     .map((s) => ({ name: s.name, formLabel: s.formLabel }));
 
   const chargeSuffix = /蓄力/.test(mainBlood.skill.effect) ? '；它是蓄力招，得占一回合换这份威力' : '';
-  const bloodlineExplanation =
-    mainBlood.kind === '本系'
-      ? `${spirit.name} 的血脉技能表里，${mainBlood.blood}血脉给的是「${mainBlood.skill.name}」，正好是${mainBlood.skill.type}系${mainBlood.skill.category}（威力 ${mainBlood.skill.power ?? '—'} / 能耗 ${mainBlood.skill.energy ?? '—'}），和本体属性一致，等于多一个本系技能位${chargeSuffix}。`
-      : mainBlood.kind === '补盲'
-        ? `${spirit.name} 的现学技能里缺 ${mainBlood.skill.type} 系输出，而 ${mainBlood.blood}血脉正好给「${mainBlood.skill.name}」（${mainBlood.skill.category}，威力 ${mainBlood.skill.power ?? '—'} / 能耗 ${mainBlood.skill.energy ?? '—'}），改血脉比硬练新技能更省${chargeSuffix}。`
-        : `${spirit.name} 的血脉技能表里最贴这个流派的是 ${mainBlood.blood}血脉的「${mainBlood.skill.name}」：${mainBlood.skill.effect || '变化技能'}。伤害向的血脉技能威力都不如现有技能，这里用功能技能补回合。`;
+  const bloodDetail =
+    `${mainBlood.blood}血脉「${mainBlood.skill.name}」` +
+    (isDamaging(mainBlood.skill as Skill)
+      ? `（${mainBlood.skill.type}系${mainBlood.skill.category}，威力 ${mainBlood.skill.power ?? '—'} / 能耗 ${mainBlood.skill.energy ?? '—'}）${chargeSuffix}`
+      : `（${mainBlood.skill.type}系变化：${mainBlood.skill.effect || '—'}）`);
+  const rivalNote = (() => {
+    const second = bloodRanked[1];
+    if (!second) return '';
+    return `得分第二的${second.blood}血脉「${second.skill.name}」（${Math.round(second.value)} 分 vs ${Math.round(mainBlood.value)} 分）与它互斥，已剔除。`;
+  })();
+  const lastSlot = slots[slots.length - 1];
+  const bloodlineExplanation = !champion
+    ? `${spirit.name} 的 Wiki 学习面里没有可用的血脉技能表，保持默认普通血脉，不推荐改血脉。`
+    : mainBlood.equipped
+      ? `${spirit.name}同时能拿到 ${bloodRanked.length} 个血脉技能，但改血脉只改一个技能位，所以只保留收益最高的${bloodDetail}，` +
+        `放进第 ${mainBlood.slotIndex} 格（${slots[mainBlood.slotIndex! - 1]?.slot ?? '输出'}）。${rivalNote}`
+      : `${spirit.name}能拿到的 ${bloodRanked.length} 个血脉技能里，最高收益是${bloodDetail}，` +
+        `但仍赢不过本方案的四格（最弱的一格是第 ${slots.length} 格「${lastSlot?.skill.name ?? '—'}」），` +
+        `所以不建议改血脉，也不携带血脉技能（保留普通血脉）。血脉技能只能选一个，不会为了凑满四个技能再塞一个进去。`;
 
   const bloodlineNote =
-    `血脉技能在 Lv.${mainBlood.level ?? 15} 解锁；Wiki「万能血脉秘药」可让精灵获得任意一种「系别血脉」，改血脉只换这一个技能位。` +
+    (champion ? `血脉技能在 Lv.${mainBlood.level ?? 15} 解锁。` : '') +
+    `${BLOODLINE_RULE_NOTE}` +
     (variants.length
       ? ` 同族另有 ${variants.length} 个形态分支（${variants.slice(0, 3).map((v) => v.formLabel || baseName(v.name)).join('、')}${variants.length > 3 ? '…' : ''}），种族值分布不同，方案要按具体形态重算。`
       : '');

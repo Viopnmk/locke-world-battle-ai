@@ -2591,6 +2591,16 @@ a {
   color: #63497f;
 }
 
+.blood-main--none .blood-skill strong {
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.blood-tag--none {
+  background: #f1efe7;
+  color: var(--muted);
+}
+
 .blood-skill {
   display: inline-flex;
   align-items: center;

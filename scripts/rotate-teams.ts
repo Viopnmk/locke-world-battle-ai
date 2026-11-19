@@ -17,6 +17,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { bestHit } from '../src/lib/analysis';
+import { equippableSkills } from '../src/lib/equip-rules';
 import { meta, skillsOf, spirits } from '../src/lib/spirits';
 import { matchup, TYPE_ORDER } from '../src/lib/typeChart';
 import type {
@@ -1159,8 +1160,12 @@ function utilWhy(sk: ResolvedSkill, role: RoleName): string {
  * 四个位置都从学习面里挑，不写图鉴没有的技能，也不编数值。
  */
 function pickSkillsFor(p: Profile, role: RoleName): SkillPick {
-  const all = skillsOf(p.spirit);
-  const dmg = damagers(p.spirit);
+  /* 血脉互斥（硬规则）：一只精灵只有一个血脉，学习面的 19 个血脉技能同一套配招只能带 1 个。
+     equippableSkills 先把它收敛成最多 1 个，下面无论怎么挑都不会出现第二个血脉技能。 */
+  const all = equippableSkills(p.spirit, skillsOf(p.spirit));
+  const dmg = all
+    .filter((s) => isDamaging(s) && !/使用后消耗全部生命/.test(s.effect ?? ''))
+    .sort((a, b) => (b.power ?? 0) - (a.power ?? 0) || (a.energy ?? 99) - (b.energy ?? 99));
   const stab = dmg.filter((sk) => p.types.includes(sk.type));
   const mainCat = p.mainIsPhysical ? '物理' : '魔法';
   const primary =
@@ -1173,8 +1178,10 @@ function pickSkillsFor(p: Profile, role: RoleName): SkillPick {
   const chosen: ResolvedSkill[] = [];
   const refs: PresetSkillRef[] = [];
   const used = new Set<string>();
+  const bloodUsed = () => chosen.some((sk) => sk.learn === 2);
   const add = (sk: ResolvedSkill, slot: string, why: string) => {
     if (used.has(sk.name)) return;
+    if (sk.learn === 2 && bloodUsed()) return; // 硬门禁：第二个血脉技能直接拒绝
     used.add(sk.name);
     chosen.push(sk);
     refs.push({ name: sk.name, why, slot });
@@ -1245,10 +1252,10 @@ function pickSkillsFor(p: Profile, role: RoleName): SkillPick {
     const priority = byPref([/先手\+\d|迅捷/]);
     if (priority) add(priority, '机制', utilWhy(priority, role));
   }
-  // 兜底：保证 4 个真实技能（每只都从自己的学习面里取，绝不留空位）
+  // 兜底：保证 4 个真实技能（每只都从自己的学习面里取，绝不留空位；血脉技能仍受 ≤1 限制）
   while (refs.length < 4) {
     const extra = [...all]
-      .filter((sk) => !used.has(sk.name))
+      .filter((sk) => !used.has(sk.name) && !(sk.learn === 2 && bloodUsed()))
       .sort((a, b) => (isDamaging(a) ? 1 : 0) - (isDamaging(b) ? 1 : 0) || (a.energy ?? 99) - (b.energy ?? 99))[0];
     if (!extra) break;
     add(extra, '机制', `可学技能：${effectCore(extra.effect) || skCategory(extra)}${energyTag(extra)}`);
