@@ -33,9 +33,11 @@ fi
 
 echo "[rotation] 第 ${round_before} 轮 → 第 ${round_after} 轮"
 
-# 1) 数据与文案校验（任何一条引用不到图鉴就中止，不部署坏数据）
+# rotate:teams 内部已经「先生成到内存 → 全量校验 → 备份 → 原子写入」，
+# 这里再独立跑一遍落盘后的校验（能量 / 特性 / 血脉 / 同 dex / 联动证据）。
 npm run verify:teams
 npm run verify:tactics
+npm run typecheck
 
 # 2) 构建
 npm run build
@@ -48,9 +50,7 @@ fi
 
 : "${CLOUDFLARE_API_TOKEN:?CLOUDFLARE_API_TOKEN 未设置}"
 : "${CLOUDFLARE_ACCOUNT_ID:?CLOUDFLARE_ACCOUNT_ID 未设置}"
-npx wrangler pages deploy dist --project-name=locke-world-battle-ai --branch=main
-
-# 4) 提交（只提交两份轮换数据；其它改动保持不动）
+# 4) 先提交再部署：push 失败时线上不会出现「git 里没有记录」的版本
 git add src/data/team-rotation.json src/data/rotation-history.json
 if git diff --cached --quiet; then
   echo "[rotation] 没有需要提交的更改。"
@@ -60,5 +60,8 @@ else
     commit -m "阵容轮换：${summary}"
   git push origin main
 fi
+
+# 5) 部署（提交成功之后）
+npx wrangler pages deploy dist --project-name=locke-world-battle-ai --branch=main
 
 echo "[rotation] 完成：第 ${round_after} 轮已上线（下次 $(node -e "process.stdout.write(require('./src/data/team-rotation.json').nextRotationAt)")）。"

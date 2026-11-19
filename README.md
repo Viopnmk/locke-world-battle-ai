@@ -176,9 +176,39 @@
 - **文案口径**：特性名与效果、技能名/属性/威力/能耗/效果全部来自图鉴原文；数字（平均种族值、覆盖、共同弱点、
   武器威力）全部现算；特性依赖天气而本队没有开天气手段时，联动里会照实标注。
 
-**校验**：`npm run verify:teams` — 3 套 / 18 只 / 54 条技能引用 / 18 步联动逐条比对图鉴；
-另查「3 套原型互不相同、18 只互不重复、角色六项齐全、nextRotationAt = updatedAt + 48h、history 与当前轮一致、
-与上一轮重叠必须为 0（或写进弱点）」，以及数据面板与云端事实块无 `undefined`/`NaN`。
+**校验**：`npm run verify:teams` — 3 套 / 18 只 / 72 条技能引用 / 11 条联动逐条比对图鉴；
+另查「3 套原型互不相同、18 只互不重复、同队不能出现同图鉴编号、角色六项齐全、nextRotationAt = updatedAt + 48h、
+history 与当前轮一致、与上一轮重叠必须为 0（或写进弱点）」，以及数据面板与云端事实块无 `undefined`/`NaN`。
+
+### Phase 11 · 能量模型与阵容协同重构（第 2 轮）
+
+第 1 轮阵容审计（`downloads/locke-phase10/audit-report.md`）指出：联动里有伪因果（「冰封 → 后发制人」）、
+特性空转（噼啪鸟/武斗酷猫/神谕鲨）、同 dex 两种形态同队、打击面口径混用（页面 15/18 vs 学习面 18/18 vs 4 招 14/18）、
+以及「先写盘再校验」。这一轮重做的是底层算法与能量规则，不是文案：
+
+- **能量模型**（`src/lib/energy.ts`，全站唯一口径）：
+  - 三个维度分开算：**上场能量**（普通精灵登场自带 10 点；「初始能量为0」的地脉 / 结晶水 / 散热 / 慢热型 / 盗魂铃 入场为 0，
+    另有「突破上限」类特性单独建模）、**技能能耗**（图鉴 `energy` 字段）、**能量恢复**（聚能 +5/回合、特性回能、技能回能）。
+  - 默认没有每回合自动回能；换人不额外扣能量、只花一回合（官方手册未写扣能量，标注「待实测」）；
+    恢复瓶回复量官方未公布，不计入。
+  - 每只精灵逐项输出：上场能量 / 4 招能耗 / 首回合能打出的最强招与剩余 / 需要聚能几回合 / 回能手段 / 10 点上限校验。
+  - 规则来源与「待验证」边界写在 `ENERGY_RULES` 与 `downloads/locke-energy-teams/report.md`。
+- **特性可用性**（`src/lib/trait-rules.ts`）：把特性原文翻译成「需要什么触发源」（回能技 / 蓄力 / 迸发 / 0 费 /
+  某系技能 / 应对技 / 防御技 / 逼退 / 自叠状态 / 总能耗阈值…），再去 4 招里找；找不到判 idle 并给出替代技能，
+  不再默认「特性一定生效」。另含队内互斥检查（例：「陨落」会关掉队友的回合结束效果）。
+- **组队与配招**（`scripts/rotate-teams.ts` v2）：
+  - 默认排除 68 只首领形态、按 dex 去重（同图鉴编号的两形态不能同队）；
+  - 配招先点特性再挑招：特性要什么就从学习面选什么进来；血脉技能 ≤1（`equip-rules.ts`）；
+  - 评分六维：4 招打击面、弱点接住数、特性生效数、能量（入场即招 / 平均能耗 / 聚能需求）、速度、种族值；
+    另有负面前提（入场掉半血、力竭资敌、0 能量）、队内互斥、`>7` 费大招在均衡/经济队的惩罚；
+  - 角色分配用 6! = 720 种排列里贴合度最高的一种，避免「承伤位只有 85 血」。
+- **三套方向固定**：高爆发输出（`burst`）/ 均衡攻防（`balance`）/ 能量经济与持续作战（`energy`），
+  每 48 小时在同一方向内重新搜人。
+- **联动证据**：每条联动带 `confidence`（verified / inferred）与 `evidence`（图鉴原句），
+  校验脚本反向比对「evidence 必须是某条技能或特性原文的子串」；抬费类特性只讲对手多付能量，不写成增伤。
+- **落盘顺序**：生成到内存 → `scripts/lib/team-audit.ts` 全量校验 → 备份到 `src/data/.backup/` → 临时文件 + 原子 rename；
+  校验不通过直接退出，旧数据不动。`run-rotation-job.sh` 也改成「先提交再部署」。
+
 
 ### 防编造（anti-fabrication）
 
@@ -223,7 +253,9 @@ src/
     build-guide.ts         培养方案引擎：四技能 / 性格 / 个体值 / 改血脉（全部由图鉴真数据推演）
     team-types.ts          阵容推荐的数据结构（TeamPreset / 轮换文件 / 历史）
     team-presets.ts        读 src/data/team-rotation.json：当前这一轮的 3 套队伍 + 解析与云端事实块
-    team-plan.ts           阵容数据面板：平均种族值/速度分层/物魔分工/覆盖面/共同弱点与抗性
+    team-plan.ts           阵容数据面板：平均种族值/速度分层/物魔分工/4 招覆盖面/共同弱点与抗性
+    energy.ts              能量模型：上限 10 / 上场能量 / 技能能耗 / 回能 / 聚能（规则带出处与待验证标注）
+    trait-rules.ts         特性可用性判定与队内互斥（触发源、空转提示、替代技能）
   services/ai-client.ts    Worker 端点、模型列表、analyze 调用
   data/                    fetch-wiki.py 生成的产物（见下）+ team-rotation.json / rotation-history.json
 archive/                   已下线的 13 套静态阵容（不参与构建，留档备查）
@@ -241,8 +273,9 @@ scripts/
   verify-build-guide.ts    培养方案全量校验（662 形态 × 2 流派）
   verify-bloodlines.ts     血脉互斥硬门禁（培养方案 + 阵容 + 血脉表）
   rotate-teams.ts          48 小时轮换引擎：10 种战术原型 + 全图鉴约束搜索 → team-rotation.json / rotation-history.json
-  verify-teams.ts          当前轮 3 套阵容校验（成员/特性/技能/角色/元数据/去重/文案/数据面板）
-  run-rotation-job.sh      定时任务：rotate → verify → build → deploy → commit & push
+  verify-teams.ts          当前轮 3 套阵容校验（能量复算 / 特性可用性 / 血脉 ≤1 / 同 dex / 联动证据 / 覆盖口径）
+  lib/team-audit.ts        校验核心：生成器写盘前与 CLI 共用同一份逻辑
+  run-rotation-job.sh      定时任务：rotate（内置校验）→ verify → typecheck → build → commit & push → deploy
   screen-mixed.ts          历史：跨属性混搭队的量化筛选（读 archive/ 里的旧六套复算）
   verify-tactics.ts        伤害估算与分析师点评全量校验（全量对位 + 300 组随机阵容）
 ```

@@ -1,114 +1,224 @@
 {
- "rounds": [
-  {
-   "round": 1,
-   "updatedAt": "2026-11-19T11:42:24+08:00",
-   "nextRotationAt": "2026-11-21T11:42:24+08:00",
-   "archetypes": [
+  "rounds": [
     {
-     "id": "nuke",
-     "label": "重炮强攻"
+      "round": 1,
+      "updatedAt": "2026-11-19T11:42:24+08:00",
+      "nextRotationAt": "2026-11-21T11:42:24+08:00",
+      "archetypes": [
+        {
+          "id": "nuke",
+          "label": "重炮强攻"
+        },
+        {
+          "id": "drain",
+          "label": "抽能压制"
+        },
+        {
+          "id": "rush",
+          "label": "高速爆发"
+        }
+      ],
+      "teams": [
+        {
+          "id": "r1-nuke",
+          "name": "龙系重炮队",
+          "category": "nuke",
+          "archetype": "nuke",
+          "archetypeLabel": "重炮强攻",
+          "spiritIds": [
+            "pet_000313",
+            "pet_000608",
+            "pet_000555",
+            "pet_000331",
+            "pet_000185",
+            "pet_000464"
+          ],
+          "spiritNames": [
+            "龙鱼",
+            "银月狼王",
+            "伊兰龙",
+            "伊兰亚龙",
+            "波多西",
+            "游蛇魔使"
+          ]
+        },
+        {
+          "id": "r1-drain",
+          "name": "抽能队",
+          "category": "tax",
+          "archetype": "drain",
+          "archetypeLabel": "抽能压制",
+          "spiritIds": [
+            "pet_000106",
+            "pet_000274",
+            "pet_000044",
+            "pet_000043",
+            "pet_000091",
+            "pet_000549"
+          ],
+          "spiritNames": [
+            "彩蝶鲨",
+            "雪灵",
+            "花影羚羊",
+            "铃兰羊",
+            "瞌睡王",
+            "恶魔狼王"
+          ]
+        },
+        {
+          "id": "r1-rush",
+          "name": "高速队",
+          "category": "rush",
+          "archetype": "rush",
+          "archetypeLabel": "高速爆发",
+          "spiritIds": [
+            "pet_000348",
+            "pet_000660",
+            "pet_000550",
+            "pet_000592",
+            "pet_000544",
+            "pet_000593"
+          ],
+          "spiritNames": [
+            "噼啪鸟",
+            "影子剪纸",
+            "烈火战神",
+            "风暴酷拉",
+            "神谕鲨",
+            "武斗酷猫"
+          ]
+        }
+      ],
+      "spiritIds": [
+        "pet_000313",
+        "pet_000608",
+        "pet_000555",
+        "pet_000331",
+        "pet_000185",
+        "pet_000464",
+        "pet_000106",
+        "pet_000274",
+        "pet_000044",
+        "pet_000043",
+        "pet_000091",
+        "pet_000549",
+        "pet_000348",
+        "pet_000660",
+        "pet_000550",
+        "pet_000592",
+        "pet_000544",
+        "pet_000593"
+      ]
     },
     {
-     "id": "drain",
-     "label": "抽能压制"
-    },
-    {
-     "id": "rush",
-     "label": "高速爆发"
+      "round": 2,
+      "updatedAt": "2026-11-20T01:08:24+08:00",
+      "nextRotationAt": "2026-11-22T01:08:24+08:00",
+      "archetypes": [
+        {
+          "id": "burst",
+          "label": "高爆发输出"
+        },
+        {
+          "id": "balance",
+          "label": "均衡攻防"
+        },
+        {
+          "id": "energy",
+          "label": "能量经济与持续作战"
+        }
+      ],
+      "teams": [
+        {
+          "id": "r2-burst",
+          "name": "火疾袭队",
+          "category": "nuke",
+          "archetype": "burst",
+          "archetypeLabel": "高爆发输出",
+          "spiritIds": [
+            "pet_000228",
+            "pet_000516",
+            "pet_000277",
+            "pet_000040",
+            "pet_000349",
+            "pet_000325"
+          ],
+          "spiritNames": [
+            "魔眷鸟",
+            "雅丹鬃",
+            "饮雪狂兽",
+            "伊贝儿",
+            "晶石蜗（莲花刚玉的样子）",
+            "蝎子王"
+          ]
+        },
+        {
+          "id": "r2-balance",
+          "name": "地稳阵队",
+          "category": "mixed",
+          "archetype": "balance",
+          "archetypeLabel": "均衡攻防",
+          "spiritIds": [
+            "pet_000451",
+            "pet_000015",
+            "pet_000491",
+            "pet_000041",
+            "pet_000358",
+            "pet_000433"
+          ],
+          "spiritNames": [
+            "秩序鱿墨",
+            "罗隐",
+            "烟花伯爵",
+            "伊贝粉粉",
+            "月牙雪熊",
+            "棋骑士（白子）"
+          ]
+        },
+        {
+          "id": "r2-energy",
+          "name": "低耗循环队",
+          "category": "sustain",
+          "archetype": "energy",
+          "archetypeLabel": "能量经济与持续作战",
+          "spiritIds": [
+            "pet_000333",
+            "pet_000428",
+            "pet_000120",
+            "pet_000622",
+            "pet_000225",
+            "pet_000059"
+          ],
+          "spiritNames": [
+            "厉毒修萝",
+            "乌拉塔（极夜的样子）",
+            "尖角蜘蛛",
+            "果实立方人",
+            "寂灭骨龙",
+            "卷毛鸭"
+          ]
+        }
+      ],
+      "spiritIds": [
+        "pet_000228",
+        "pet_000516",
+        "pet_000277",
+        "pet_000040",
+        "pet_000349",
+        "pet_000325",
+        "pet_000451",
+        "pet_000015",
+        "pet_000491",
+        "pet_000041",
+        "pet_000358",
+        "pet_000433",
+        "pet_000333",
+        "pet_000428",
+        "pet_000120",
+        "pet_000622",
+        "pet_000225",
+        "pet_000059"
+      ]
     }
-   ],
-   "teams": [
-    {
-     "id": "r1-nuke",
-     "name": "龙系重炮队",
-     "category": "nuke",
-     "archetype": "nuke",
-     "archetypeLabel": "重炮强攻",
-     "spiritIds": [
-      "pet_000313",
-      "pet_000608",
-      "pet_000555",
-      "pet_000331",
-      "pet_000185",
-      "pet_000464"
-     ],
-     "spiritNames": [
-      "龙鱼",
-      "银月狼王",
-      "伊兰龙",
-      "伊兰亚龙",
-      "波多西",
-      "游蛇魔使"
-     ]
-    },
-    {
-     "id": "r1-drain",
-     "name": "抽能队",
-     "category": "tax",
-     "archetype": "drain",
-     "archetypeLabel": "抽能压制",
-     "spiritIds": [
-      "pet_000106",
-      "pet_000274",
-      "pet_000044",
-      "pet_000043",
-      "pet_000091",
-      "pet_000549"
-     ],
-     "spiritNames": [
-      "彩蝶鲨",
-      "雪灵",
-      "花影羚羊",
-      "铃兰羊",
-      "瞌睡王",
-      "恶魔狼王"
-     ]
-    },
-    {
-     "id": "r1-rush",
-     "name": "高速队",
-     "category": "rush",
-     "archetype": "rush",
-     "archetypeLabel": "高速爆发",
-     "spiritIds": [
-      "pet_000348",
-      "pet_000660",
-      "pet_000550",
-      "pet_000592",
-      "pet_000544",
-      "pet_000593"
-     ],
-     "spiritNames": [
-      "噼啪鸟",
-      "影子剪纸",
-      "烈火战神",
-      "风暴酷拉",
-      "神谕鲨",
-      "武斗酷猫"
-     ]
-    }
-   ],
-   "spiritIds": [
-    "pet_000313",
-    "pet_000608",
-    "pet_000555",
-    "pet_000331",
-    "pet_000185",
-    "pet_000464",
-    "pet_000106",
-    "pet_000274",
-    "pet_000044",
-    "pet_000043",
-    "pet_000091",
-    "pet_000549",
-    "pet_000348",
-    "pet_000660",
-    "pet_000550",
-    "pet_000592",
-    "pet_000544",
-    "pet_000593"
-   ]
-  }
- ]
+  ]
 }

@@ -15,7 +15,8 @@
     "verify:teams": "npx esbuild scripts/verify-teams.ts --bundle --platform=node --format=esm --outfile=.cache/verify-teams.mjs && node .cache/verify-teams.mjs",
     "verify:bloodlines": "npx esbuild scripts/verify-bloodlines.ts --bundle --platform=node --format=esm --outfile=.cache/verify-bloodlines.mjs && node .cache/verify-bloodlines.mjs",
     "screen:mixed": "npx esbuild scripts/screen-mixed.ts --bundle --platform=node --format=esm --outfile=.cache/screen-mixed.mjs && node .cache/screen-mixed.mjs",
-    "rotate:teams": "npx esbuild scripts/rotate-teams.ts --bundle --platform=node --format=esm --outfile=.cache/rotate-teams.mjs && node .cache/rotate-teams.mjs"
+    "rotate:teams": "npx esbuild scripts/rotate-teams.ts --bundle --platform=node --format=esm --outfile=.cache/rotate-teams.mjs && node .cache/rotate-teams.mjs",
+    "verify:build-guide": "npx esbuild scripts/verify-build-guide.ts --bundle --platform=node --format=esm --outfile=.cache/verify-build-guide.mjs && node .cache/verify-build-guide.mjs"
   },
   "dependencies": {
     "react": "18.3.1",

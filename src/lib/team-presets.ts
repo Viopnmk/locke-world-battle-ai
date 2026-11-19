@@ -97,6 +97,16 @@ export function presetFactBlock(preset: TeamPreset): string {
       `核心技能联动：${preset.synergies.map((s) => `「${s.title}」${s.text}`).join(' ')}`,
     );
   }
+  if (preset.energySummary) {
+    lines.push(`能量总览：${preset.energySummary.line}`);
+  }
+  if (preset.analysis) {
+    lines.push(
+      `团队配合六项：${Object.values(preset.analysis)
+        .map((b) => `${b.title}——${b.text}`)
+        .join(' ')}`,
+    );
+  }
   if (preset.battlePlan?.length) {
     lines.push(
       `五阶段战术链：${preset.battlePlan
@@ -121,7 +131,12 @@ export function presetFactBlock(preset: TeamPreset): string {
             : ref.name;
         })
         .join('、');
-      return `${spirit.name}（${m.role}）：${trait}；核心技能 ${skills}。`;
+      const en = m.energy
+        ? `；能量：上场 ${m.energy.entry}/${m.energy.cap} 点，技能 ${m.energy.costs.join('/')} 费，回能 ${
+            m.energy.recoveries.join('、') || '靠聚能'
+          }${m.energy.firstTurn ? `，首回合可打「${m.energy.firstTurn.name}」剩 ${m.energy.firstTurn.leftover}` : '，首回合打不出'}`
+        : '';
+      return `${spirit.name}（${m.role}）：${trait}；核心技能 ${skills}${en}。`;
     })
     .filter(Boolean)
     .join(' ');

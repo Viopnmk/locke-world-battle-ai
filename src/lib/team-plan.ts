@@ -2,7 +2,7 @@
  * 阵容推荐的数据面板：所有数字都从 src/data 现算，和「对战」页用的是同一套 analysis.ts。
  * 这里只做汇总与解释，不写死任何数值。
  */
-import { bestHit, teamMetrics } from './analysis';
+import { damagingSkills, teamMetrics } from './analysis';
 import { skillsOf } from './spirits';
 import { memberSpirits, presetSpirit, resolveMemberSkill } from './team-presets';
 import type { TeamPreset } from './team-presets';
@@ -23,9 +23,12 @@ export interface TeamPlanMetrics {
   topPower: { name: string; skill: string; type: string; power: number; energy: number | null } | null;
   /** 每只精灵最高威力技能汇总，用来算团队的平均伤害档次 */
   avgTopPower: number;
-  /** 全队能打出 ≥2 倍的防守属性数量 */
+  /** 全队「推荐 4 招」能打出 ≥2 倍的属性数量（口径：本套配招，不是学习面） */
   coverageCount: number;
   coverageTypes: string[];
+  /** 全队「学习面」能打出 ≥2 倍的属性数量（参考值） */
+  coverageLearnsetCount: number;
+  coverageLearnsetTypes: string[];
   sharedWeak: { type: string; count: number; members: string[]; maxMultiplier: number }[];
   sharedResist: { type: string; count: number; members: string[] }[];
   /** 对每个共同弱点，队里谁抗它（≤0.5 倍） */
@@ -89,8 +92,17 @@ export function teamPlanMetrics(preset: TeamPreset): TeamPlanMetrics {
     }
   }
 
-  const coverageTypes = TYPE_ORDER.filter((t) =>
-    team.some((s) => bestHit(s, [t]).multiplier >= 2),
+  // 打击面按「推荐 4 招」算：只统计本套实际会带的招，学习面另算参考值
+  const chosenDmg = preset.members.flatMap((member) => {
+    const spirit = presetSpirit(member.spiritId);
+    if (!spirit) return [];
+    return member.skills
+      .map((ref) => resolveMemberSkill(spirit, ref.name))
+      .filter((sk): sk is NonNullable<typeof sk> => Boolean(sk) && (sk!.power ?? 0) > 0 && Boolean(sk!.type));
+  });
+  const coverageTypes = TYPE_ORDER.filter((t) => chosenDmg.some((sk) => matchup(sk.type, [t]).multiplier >= 2));
+  const coverageLearnsetTypes = TYPE_ORDER.filter((t) =>
+    team.some((s) => damagingSkills(s).some((sk) => matchup(sk.type, [t]).multiplier >= 2)),
   );
 
   // 共同弱点/抗性沿用对战页的同一套计算（敌方留空，只取我方内部的统计）
@@ -121,6 +133,8 @@ export function teamPlanMetrics(preset: TeamPreset): TeamPlanMetrics {
     avgTopPower: powerCount ? Math.round(powerSum / powerCount) : 0,
     coverageCount: coverageTypes.length,
     coverageTypes,
+    coverageLearnsetCount: coverageLearnsetTypes.length,
+    coverageLearnsetTypes,
     sharedWeak,
     sharedResist,
     weakAnswers,

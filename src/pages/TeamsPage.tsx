@@ -64,15 +64,17 @@ export function TeamsPage({ onOpenBuild, onImport }: Props) {
           阵容推荐 <span className="panel__hint">48 小时自动轮换</span>
         </h2>
         <p className="ai__lead">
-          每 {ROTATION_INTERVAL_HOURS} 小时由全图鉴（{meta.spiritCount} 条形态记录）重新组 3 套<strong>全新</strong>阵容：
-          3 种不同打法，18 只互不重复的精灵。每套都写明<strong>起手第一只、六只分工与每人 4 个技能、核心联动、以及从开局到逆风局的 5 阶段战术链</strong>；
+          每 {ROTATION_INTERVAL_HOURS} 小时由全图鉴（{meta.spiritCount} 条形态记录）重新组 3 套<strong>全新</strong>阵容：高爆发输出、均衡攻防、能量经济与持续作战。
+          每套都写明<strong>起手第一只、六只分工与每人 4 个技能、逐只能量明细（上场 / 技能 / 回能 / 10 点上限）、六项团队配合分析、核心联动与 5 阶段战术链</strong>；
           特性与技能全部取自 BWIKI 原文，数字用「对战」页同一个本地引擎现算。
         </p>
         <div className="engine-pills">
           <span className="engine-pill">🔄 每 {ROTATION_INTERVAL_HOURS} 小时换 3 套</span>
           <span className="engine-pill">🥇 起手第一只</span>
           <span className="engine-pill">🎯 六人分工 + 4 技能</span>
-          <span className="engine-pill">🧠 5 阶段战术链</span>
+          <span className="engine-pill">⚡ 逐只能量明细</span>
+          <span className="engine-pill">🧠 六项配合分析</span>
+          <span className="engine-pill">🪜 5 阶段战术链</span>
           <span className="engine-pill">⚡ 一键导入对战</span>
         </div>
       </section>
@@ -123,26 +125,34 @@ export function TeamsPage({ onOpenBuild, onImport }: Props) {
       ))}
 
       <section className="panel panel--quiet data-note">
-        <h2 className="panel__title">这一轮的战术手册是怎么算出来的</h2>
+        <h2 className="panel__title">这一轮的阵容与能量是怎么算出来的</h2>
         <ul>
           <li>
-            由 <code>scripts/rotate-teams.ts</code> 生成（<code>npm run rotate:teams</code>）：先在全图鉴上按战术原型做约束搜索
-            （打击面、共同弱点、每个弱点是否有队友以 ≤0.5 倍接住、六种分工是否都有人），再做爬山换人把最弱的一环换掉。
+            由 <code>scripts/rotate-teams.ts</code> 生成（<code>npm run rotate:teams</code>）：先按战术方向在全图鉴做约束搜索
+            （4 招打击面、共同弱点是否有队友以 ≤0.5 倍接住、六种分工、特性是否有触发源、能量能否在 10 点内打出），再做换人爬山。
           </li>
           <li>
-            <strong>起手第一只</strong>取队里的先手位，理由只用真实数字：速度在队内排第几、技能有没有先手/速度强化、本身有几个 ×2 弱点、其中有几个有队友能接。
+            <strong>能量模型</strong>（<code>src/lib/energy.ts</code>）：每只精灵上限 10 点；普通精灵上场自带 10 点，
+            「初始能量为0」的特性入场为 0（地脉 / 结晶水 / 散热 / 慢热型 / 盗魂铃），另有「突破上限」类特性单独处理。
+            技能能耗来自图鉴 <code>energy</code> 字段，回能只有聚能（一回合 +5）、特性与技能三种来源，<strong>没有每回合自动回能</strong>。
+            换人不额外扣能量、只花一回合（官方手册未写明扣能量，按待实测处理）。
           </li>
           <li>
-            <strong>六人分工</strong>是 6! = 720 种角色分配里贴合度最高的一种；每人 4 个技能按「主攻 → 补盲 → 角色机制 → 防守/第二补盲」从该精灵自己的学习面（升级 / 技能石 / 血脉）里选。
-            血脉技能互斥：一只精灵只有一个血脉，19 个血脉技能只能带 1 个，推荐里不会出现第二个。
+            <strong>配招</strong>先点特性再挑招：特性要迸发 / 回能 / 0 费 / 某系技能，就把能点亮它的技能选进 4 招；
+            点不亮就在卡片上写「本套未触发」。血脉技能互斥，一只精灵最多 1 个（<code>equip-rules.ts</code>）。
           </li>
           <li>
-            <strong>核心联动</strong>只写队内真实存在的关系：属性联防、状态接力、能耗压制、蓄力联动、残血反打、天气、换人惩罚、打击面互补——每条都点名技能、特性与数值，查不到就不写。
+            <strong>联动</strong>只从原文能对上的模板生成：每条带 evidence（图鉴原句）与证据强度（verified / inferred）。
+            「抬费」类特性只讲对手多付能量，不写成增伤；查不到因果的联动直接不生成。
           </li>
           <li>
-            <strong>5 阶段战术链</strong>（开局 / 第一阶段 / 中期 / 后期 / 逆风局）由当轮 6 只的速度、主招威力、共同弱点与换人盾现算，不套模板。
+            <strong>打击面</strong>一律按「推荐 4 招」算，另附「全学习面」作参考，两个口径不混写；同队不允许出现同图鉴编号的两个形态，
+            68 只首领形态默认不进候选池（无法确认是否可上场 PvP，待核验）。
           </li>
-          <li>每轮从 10 种战术原型里挑 3 种，且不与上一轮重复；上一轮的 18 只优先排除，只有凑不出合格阵容时才会放宽（卡片的「弱点」里会写明重叠了几只）。</li>
+          <li>
+            生成器写完之前先跑 <code>scripts/lib/team-audit.ts</code> 全量校验（能量复算、特性可用性、血脉 ≤1、同 dex、定位冲突、联动证据），
+            不通过就退出，旧数据不动；通过后先备份到 <code>src/data/.backup/</code> 再原子写入。
+          </li>
         </ul>
       </section>
     </div>
@@ -210,7 +220,20 @@ function TeamCard({
           <strong>
             {metrics.coverageCount}/{18}
           </strong>
-          <small>能打出 ≥2 倍的属性</small>
+          <small>4 招能打出 ×2 的属性</small>
+          <em>学习面 {metrics.coverageLearnsetCount}/18</em>
+        </div>
+        <div className="team-metric">
+          <strong>{preset.energySummary?.entryTotal ?? 60}</strong>
+          <small>6 只上场能量合计</small>
+          <em>平均 {preset.energySummary?.avgCost ?? '—'} 费 / 招</em>
+        </div>
+        <div className="team-metric">
+          <strong>
+            {preset.energySummary?.readyCount ?? 6}/6
+          </strong>
+          <small>入场即可出招</small>
+          <em>{preset.energySummary?.gatherCount ? `${preset.energySummary.gatherCount} 只需聚能` : '无需聚能'}</em>
         </div>
       </div>
 
@@ -261,6 +284,90 @@ function TeamCard({
           <p className="team-lead__caution">
             <span aria-hidden="true">⚠️</span> {preset.lead.caution}
           </p>
+        </section>
+      ) : null}
+
+      {/* 能量分配 */}
+      <section className="team-section team-energy" aria-label="能量分配">
+        <h3 className="team-section__title">
+          能量分配与剩余 <span>上场 / 技能 / 回能 / 10 点上限</span>
+        </h3>
+        <p className="team-energy__line">
+          {preset.energySummary?.line ??
+            '6 只入场能量合计 60 点，默认每只 10 点；聚能一回合 +5 点。'}
+        </p>
+        <ul className="energy-rows">
+          {preset.members.map((member) => {
+            const spirit = presetSpirit(member.spiritId);
+            const en = member.energy;
+            if (!spirit || !en) return null;
+            return (
+              <li key={`en-${member.spiritId}`} className={`energy-row energy-row--${en.status}`}>
+                <div className="energy-row__head">
+                  <strong>{shortName(spirit.name)}</strong>
+                  <span className="energy-row__role">{member.role}</span>
+                  <span className="energy-row__status">
+                    {en.status === 'ready' ? '入场即出招' : en.status === 'gather' ? '需先聚能' : '入场打不出'}
+                  </span>
+                </div>
+                <div className="energy-row__nums">
+                  <span className="energy-chip energy-chip--entry">
+                    上场 {en.entry}/{en.cap}
+                  </span>
+                  <span className="energy-chip">技能 {en.costs.join('/')} 费</span>
+                  <span className="energy-chip">
+                    首回合 {en.firstTurn ? `「${en.firstTurn.name}」剩 ${en.firstTurn.leftover}` : '无可用招'}
+                  </span>
+                  <span className="energy-chip">聚能 {en.gatherTurns} 回合</span>
+                </div>
+                <p className="energy-row__note">
+                  <span>回能</span>
+                  {en.recoveries.join('、') || '靠聚能 +5/回合'}；{en.caution}
+                </p>
+                <p className="energy-row__source">
+                  {en.entryLabel}：{en.entryDetail}
+                </p>
+              </li>
+            );
+          })}
+        </ul>
+        <p className="team-energy__note">
+          口径：普通精灵上场自带 10 点能量，「初始能量为0」类特性入场为 0；换人只花一回合、不额外扣能量（待实测）。
+          恢复瓶回复量官方未公布，未计入。
+        </p>
+      </section>
+
+      {/* 六项团队配合分析 */}
+      {preset.analysis ? (
+        <section className="team-section team-analysis" aria-label="团队配合分析">
+          <h3 className="team-section__title">
+            团队配合分析 <span>六项：输出 · 覆盖 · 防御 · 轮换 · 能量 · 反制</span>
+          </h3>
+          <ul className="analysis-list">
+            {[
+              ['①', preset.analysis.core],
+              ['②', preset.analysis.coverage],
+              ['③', preset.analysis.resilience],
+              ['④', preset.analysis.rotation],
+              ['⑤', preset.analysis.energy],
+              ['⑥', preset.analysis.counters],
+            ].map(([no, blk]) => {
+              const b = blk as typeof preset.analysis.core;
+              return (
+                <li key={b.key} className={`analysis-block analysis-block--${b.key}`}>
+                  <h4 className="analysis-block__title">
+                    <span aria-hidden="true">{no as string}</span> {b.title}
+                  </h4>
+                  <p className="analysis-block__text">{b.text}</p>
+                  <ul className="analysis-block__bullets">
+                    {b.bullets.map((line) => (
+                      <li key={line}>{line}</li>
+                    ))}
+                  </ul>
+                </li>
+              );
+            })}
+          </ul>
         </section>
       ) : null}
 
@@ -355,6 +462,13 @@ function TeamCard({
                       <span className="team-member__spe">速 {spirit.stats.spe ?? '—'}</span>
                     </span>
                     <span className="team-member__note">{member.note}</span>
+                    {member.energy ? (
+                      <span className="team-member__energy">
+                        <b>上场 {member.energy.entry}</b>
+                        <span>技能 {member.energy.costs.join('/')} 费</span>
+                        <span>{member.energy.firstTurn ? `首回合「${member.energy.firstTurn.name}」剩 ${member.energy.firstTurn.leftover}` : '首回合无招'}</span>
+                      </span>
+                    ) : null}
                   </span>
                   <span className="team-member__go" aria-hidden="true">
                     ›
@@ -386,8 +500,9 @@ function TeamCard({
                   })}
                 </ul>
                 {member.traitSynergy ? (
-                  <p className="team-member__trait">
+                  <p className={`team-member__trait team-member__trait--${member.traitStatus ?? 'conditional'}`}>
                     <span>特性</span> {member.traitSynergy}
+                    {member.traitStatus === 'idle' ? <em className="trait-warn">本套未触发</em> : null}
                   </p>
                 ) : null}
                 <details className="team-member__more">

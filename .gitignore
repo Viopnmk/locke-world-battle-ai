@@ -26,3 +26,6 @@ __pycache__/
 
 # Wrangler 本地状态
 .wrangler/
+
+# 阵容轮换备份（回滚用，不进仓库）
+src/data/.backup/

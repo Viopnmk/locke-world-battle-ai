@@ -4053,3 +4053,218 @@ a {
 .team-fold > *:not(summary) {
   margin-top: 8px;
 }
+
+/* ============================================================ 能量与六项分析 */
+.team-metrics {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.energy-rows {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.energy-row {
+  min-width: 0;
+  border: 1px solid #ece5d4;
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+  background: #fbf8f0;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.energy-row--starved {
+  border-color: #e8c9b4;
+  background: #fdf4ec;
+}
+
+.energy-row--gather {
+  border-color: #e6dcc2;
+}
+
+.energy-row__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+}
+
+.energy-row__role,
+.energy-row__status {
+  font-size: 10px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: #f1ead9;
+  color: var(--ink-soft);
+}
+
+.energy-row--ready .energy-row__status {
+  background: #e6efdd;
+  color: #4d6b3a;
+}
+
+.energy-row--starved .energy-row__status {
+  background: #f6ddd0;
+  color: #8d4a2c;
+}
+
+.energy-row__nums {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.energy-chip {
+  font-size: 10.5px;
+  line-height: 1.35;
+  padding: 3px 7px;
+  border-radius: 8px;
+  background: #f3eee0;
+  color: var(--ink-soft);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.energy-chip--entry {
+  background: #e9f0f6;
+  color: #2f5670;
+}
+
+.energy-row__note,
+.energy-row__source {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.55;
+  color: var(--ink-soft);
+  overflow-wrap: anywhere;
+}
+
+.energy-row__note span {
+  display: inline-block;
+  margin-right: 4px;
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 6px;
+  background: #eef1e6;
+  color: #55613f;
+}
+
+.energy-row__source {
+  color: #9a9c93;
+  font-size: 10.5px;
+}
+
+.team-energy__line,
+.team-energy__note {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.62;
+  color: var(--ink-soft);
+}
+
+.team-energy__note {
+  color: #9a9c93;
+  font-size: 10.5px;
+}
+
+.analysis-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.analysis-block {
+  border: 1px solid #ece5d4;
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+  background: #fbf8f0;
+}
+
+.analysis-block__title {
+  margin: 0 0 4px;
+  font-size: 12.5px;
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+}
+
+.analysis-block__title span {
+  color: #b1913f;
+  font-size: 12px;
+}
+
+.analysis-block__text {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.65;
+  color: var(--ink-soft);
+  overflow-wrap: anywhere;
+}
+
+.analysis-block__bullets {
+  margin: 5px 0 0;
+  padding-left: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 10.8px;
+  line-height: 1.55;
+  color: #7c7f75;
+}
+
+.analysis-block__bullets li {
+  overflow-wrap: anywhere;
+}
+
+.team-member__energy {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  font-size: 10.2px;
+  color: #5d6455;
+}
+
+.team-member__energy b {
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 6px;
+  background: #e9f0f6;
+  color: #2f5670;
+}
+
+.team-member__energy span {
+  padding: 1px 6px;
+  border-radius: 6px;
+  background: #f3eee0;
+  overflow-wrap: anywhere;
+}
+
+.team-member__trait--idle {
+  color: #8d4a2c;
+}
+
+.trait-warn {
+  font-style: normal;
+  font-size: 10px;
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: #f6ddd0;
+  color: #8d4a2c;
+}
+
+@media (min-width: 620px) {
+  .team-metrics {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
