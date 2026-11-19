@@ -135,7 +135,7 @@ const ARCHETYPES: Archetype[] = [
     label: '能量经济与持续作战',
     category: 'sustain',
     sub: '低耗续航 · 抽能压制 · 把 10 点用满',
-    w: { coverage: 2.6, answers: 2.2, traits: 6, energy: 4.4, speed: 1.0, total: 0.02, power: 0.02 },
+    w: { coverage: 2.8, answers: 2.4, traits: 6, energy: 4.4, speed: 1.0, total: 0.02, power: 0.02 },
     roleBias: { 先手: 1.0, 核心输出: 0.9, 控制: 1.4, 辅助: 1.4, 承伤: 1.2, 收割: 0.9 },
   },
 ];
@@ -460,7 +460,7 @@ function scoreTeam(sets: MemberSet[], arch: Archetype): number {
   const w = arch.w;
   // 10 费大招在均衡/经济队里是负分：一发就把能量打空
   const burstTax = arch.id === 'burst' ? 0 : Math.max(0, eng.maxCost - 7) * 2.2;
-  const drawbackTax = sets.filter((m) => m.profile.drawback).length * 8;
+  const drawbackTax = sets.filter((m) => m.profile.drawback).length * 10;
   const conflictTax = teamConflicts(energySets).length * 14;
   // 能量经济方向：优先带「入场垫能 / 离场回能 / 每回合回能 / 抽能」这类能量特性的精灵
   const energyTraitCount = sets.filter((m) => {
@@ -479,7 +479,7 @@ function scoreTeam(sets: MemberSet[], arch: Archetype): number {
     fast * w.speed +
     maxPower * w.power +
     zeroCost * (arch.id === 'energy' ? 3 : 0.4) -
-    eng.avgCost * (arch.id === 'energy' ? 2.6 : 0.4) -
+    eng.avgCost * (arch.id === 'energy' ? 9 : 0.4) -
     burstTax -
     drawbackTax -
     conflictTax +
@@ -503,7 +503,7 @@ function assignRoles(sets: MemberSet[], arch: Archetype): MemberSet[] {
       const leadP = roleOf('先手');
       const fastest = [...sets].sort((a, b) => b.profile.spe - a.profile.spe)[0].profile;
       if (tank && tank.bulk < 360) score -= (360 - tank.bulk) * 3;
-      if (tank && tank.drawback) score -= 120;
+      if (tank && tank.drawback) score -= 1e6;
       if (leadP) score -= Math.max(0, fastest.spe - leadP.spe) * 4;
       if (score > bestScore) {
         bestScore = score;
@@ -526,7 +526,7 @@ function assignRoles(sets: MemberSet[], arch: Archetype): MemberSet[] {
 
 /** 角色定下来之后，按角色重挑 4 招（承伤位优先减伤，控制位优先抽能…） */
 function rechooseByRole(sets: MemberSet[], arch: Archetype): MemberSet[] {
-  const ceiling = arch.id === 'energy' ? 7 : ENERGY_CAP;
+  const ceiling = arch.id === 'energy' ? 5 : ENERGY_CAP;
   let covered = coverageOfSets(sets);
   let out = sets.map((m) => {
     const pick = chooseSkills(m.profile, m.role, covered, arch.id === 'burst', ceiling);
@@ -589,6 +589,8 @@ function finalizeSets(team: Profile[], arch: Archetype): MemberSet[] {
 }
 
 function roleFit(p: Profile, role: Role, arch: Archetype): number {
+  // 承伤位不能是「入场掉半血 / 力竭资敌 / 初始 0 能量」这类有负面前提的精灵
+  if (role === '承伤' && p.drawback) return -1e9;
   const bestDmg = [...p.dmg].sort((a, b) => effPower(p, b) - effPower(p, a))[0];
   const cheapDmg = p.dmg.filter((sk) => cost(sk) <= Math.max(p.entry, 2));
   const base =
@@ -1310,7 +1312,7 @@ function buildPlan(sets: MemberSet[], eng: ReturnType<typeof teamEnergy>, lead: 
 
 const ROUND_TOKEN = 'ROUND';
 
-function makePreset(arch: Archetype, sets: MemberSet[], round: number): TeamPreset {
+function makePreset(arch: Archetype, sets: MemberSet[], round: number, overlap = 0): TeamPreset {
   const eng = teamEnergy(sets.map((m) => ({ spirit: m.profile.spirit, chosen: m.chosen })));
   const metrics = metricsFor(sets, eng);
   const lead = buildLead(sets);
@@ -1340,6 +1342,9 @@ function makePreset(arch: Archetype, sets: MemberSet[], round: number): TeamPres
   });
 
   const summary = buildSummary(arch, sets, metrics, eng).replace(ROUND_TOKEN, String(round));
+  // 上一轮去重被放宽时，必须把重叠写进弱点（校验会查）
+  const overlapNote =
+    overlap > 0 ? `；与第 ${round - 1} 轮重叠 ${overlap} 只：上一轮的 18 只已优先排除，这个方向凑不出合格阵容时才放宽` : '';
   return {
     id: `r${round}-${arch.id}`,
     name: teamName(arch, sets),
@@ -1358,7 +1363,7 @@ function makePreset(arch: Archetype, sets: MemberSet[], round: number): TeamPres
     summary,
     pros: buildPros(sets, metrics, eng),
     plan: buildPlan(sets, eng, lead, arch),
-    risk: buildRisk(sets, metrics, eng, arch),
+    risk: buildRisk(sets, metrics, eng, arch) + overlapNote,
     chain: buildChain(sets),
     members,
     lead,
@@ -1494,17 +1499,35 @@ function main() {
   const usedAcross = new Set<string>();
   ARCHETYPES.forEach((arch, i) => {
     const seed = 20261119 + round * 131 + i * 977;
-    let sets = buildTeam(arch, new Set([...banned, ...usedAcross]), seed);
-    // 若和上一轮/本轮已有的撞了，放宽「上一轮去重」再搜一次
-    if (sets.some((m) => usedAcross.has(m.profile.id))) {
-      sets = buildTeam(arch, new Set(usedAcross), seed + 17);
+    // 多试几个种子，再按「质量下限 + 分数」挑一个：覆盖 ≥16 种、承伤位不是负面前提、
+    // 能量经济方向平均能耗 ≤2.9。凑不出合格的就退回最高分那个（不硬失败）。
+    const candidates: { sets: MemberSet[]; score: number; ok: boolean; overlap: number }[] = [];
+    for (let k = 0; k < 16; k += 1) {
+      const ban = k === 0 ? new Set([...banned, ...usedAcross]) : new Set(usedAcross);
+      const built = buildTeam(arch, ban, seed + k * 137);
+      if (built.length < 6) continue;
+      if (built.some((m) => usedAcross.has(m.profile.id))) continue;
+      const cov = coverageOfSets(built).size;
+      const eng = teamEnergy(built.map((m) => ({ spirit: m.profile.spirit, chosen: m.chosen })));
+      const tankDrawback = built.some((m) => m.role === '承伤' && m.profile.drawback);
+      const ok = cov >= 16 && !tankDrawback && (arch.id !== 'energy' || eng.avgCost <= 2.9);
+      const overlap = built.filter((m) => banned.has(m.profile.id)).length;
+      candidates.push({ sets: built, score: scoreTeam(built, arch), ok, overlap });
     }
+    candidates.sort(
+      (a, b) =>
+        Number(b.overlap === 0) - Number(a.overlap === 0) ||
+        Number(b.ok) - Number(a.ok) ||
+        b.score - a.score,
+    );
+    let sets = candidates[0]?.sets ?? [];
     if (sets.length < 6) {
       console.error(`✗ ${arch.label} 只凑出 ${sets.length} 只，池子不够`);
       process.exit(1);
     }
     for (const m of sets) usedAcross.add(m.profile.id);
-    teams.push(makePreset(arch, sets, round));
+    const overlap = candidates.find((c) => c.sets === sets)?.overlap ?? sets.filter((m) => banned.has(m.profile.id)).length;
+    teams.push(makePreset(arch, sets, round, overlap));
   });
 
   // 同轮重生成时，上一轮要从历史/备份恢复，不能写成自己
