@@ -219,6 +219,116 @@
         "pet_000652",
         "pet_000021"
       ]
+    },
+    {
+      "round": 3,
+      "updatedAt": "2026-11-22T11:50:34+08:00",
+      "nextRotationAt": "2026-11-24T11:50:34+08:00",
+      "archetypes": [
+        {
+          "id": "burst",
+          "label": "高爆发输出"
+        },
+        {
+          "id": "balance",
+          "label": "均衡攻防"
+        },
+        {
+          "id": "energy",
+          "label": "能量经济与持续作战"
+        }
+      ],
+      "teams": [
+        {
+          "id": "r3-burst",
+          "name": "恶疾袭队",
+          "category": "nuke",
+          "archetype": "burst",
+          "archetypeLabel": "高爆发输出",
+          "spiritIds": [
+            "pet_000228",
+            "pet_000428",
+            "pet_000219",
+            "pet_000495",
+            "pet_000139",
+            "pet_000347"
+          ],
+          "spiritNames": [
+            "魔眷鸟",
+            "乌拉塔（极夜的样子）",
+            "獠牙猪",
+            "稻草守护者",
+            "古啦多",
+            "星光狮（月光能量的样子）"
+          ]
+        },
+        {
+          "id": "r3-balance",
+          "name": "水稳阵队",
+          "category": "mixed",
+          "archetype": "balance",
+          "archetypeLabel": "均衡攻防",
+          "spiritIds": [
+            "pet_000174",
+            "pet_000458",
+            "pet_000121",
+            "pet_000206",
+            "pet_000478",
+            "pet_000293"
+          ],
+          "spiritNames": [
+            "荆棘电环",
+            "深渊蛙",
+            "芋香巨角蛛",
+            "怖哭菇",
+            "古卷匣魔像",
+            "徘徊爪爪"
+          ]
+        },
+        {
+          "id": "r3-energy",
+          "name": "低耗节流队",
+          "category": "sustain",
+          "archetype": "energy",
+          "archetypeLabel": "能量经济与持续作战",
+          "spiritIds": [
+            "pet_000367",
+            "pet_000389",
+            "pet_000491",
+            "pet_000214",
+            "pet_000005",
+            "pet_000461"
+          ],
+          "spiritNames": [
+            "星云旅者",
+            "小丑公爵",
+            "烟花伯爵",
+            "流浪鼠",
+            "水灵",
+            "针叶巡林"
+          ]
+        }
+      ],
+      "spiritIds": [
+        "pet_000228",
+        "pet_000428",
+        "pet_000219",
+        "pet_000495",
+        "pet_000139",
+        "pet_000347",
+        "pet_000174",
+        "pet_000458",
+        "pet_000121",
+        "pet_000206",
+        "pet_000478",
+        "pet_000293",
+        "pet_000367",
+        "pet_000389",
+        "pet_000491",
+        "pet_000214",
+        "pet_000005",
+        "pet_000461"
+      ]
     }
   ]
 }
