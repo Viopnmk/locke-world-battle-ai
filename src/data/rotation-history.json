@@ -329,6 +329,116 @@
         "pet_000005",
         "pet_000461"
       ]
+    },
+    {
+      "round": 4,
+      "updatedAt": "2026-11-24T11:50:40+08:00",
+      "nextRotationAt": "2026-11-26T11:50:40+08:00",
+      "archetypes": [
+        {
+          "id": "burst",
+          "label": "高爆发输出"
+        },
+        {
+          "id": "balance",
+          "label": "均衡攻防"
+        },
+        {
+          "id": "energy",
+          "label": "能量经济与持续作战"
+        }
+      ],
+      "teams": [
+        {
+          "id": "r4-burst",
+          "name": "恶疾袭队",
+          "category": "nuke",
+          "archetype": "burst",
+          "archetypeLabel": "高爆发输出",
+          "spiritIds": [
+            "pet_000451",
+            "pet_000006",
+            "pet_000277",
+            "pet_000132",
+            "pet_000349",
+            "pet_000325"
+          ],
+          "spiritNames": [
+            "秩序鱿墨",
+            "火神",
+            "饮雪狂兽",
+            "幻灵菇",
+            "晶石蜗（莲花刚玉的样子）",
+            "蝎子王"
+          ]
+        },
+        {
+          "id": "r4-balance",
+          "name": "地稳阵队",
+          "category": "mixed",
+          "archetype": "balance",
+          "archetypeLabel": "均衡攻防",
+          "spiritIds": [
+            "pet_000505",
+            "pet_000015",
+            "pet_000120",
+            "pet_000040",
+            "pet_000225",
+            "pet_000433"
+          ],
+          "spiritNames": [
+            "离心舞者",
+            "罗隐",
+            "尖角蜘蛛",
+            "伊贝儿",
+            "寂灭骨龙",
+            "棋骑士（白子）"
+          ]
+        },
+        {
+          "id": "r4-energy",
+          "name": "低耗续航队",
+          "category": "sustain",
+          "archetype": "energy",
+          "archetypeLabel": "能量经济与持续作战",
+          "spiritIds": [
+            "pet_000375",
+            "pet_000182",
+            "pet_000217",
+            "pet_000213",
+            "pet_000133",
+            "pet_000158"
+          ],
+          "spiritNames": [
+            "上岸蛙",
+            "贝古斯",
+            "冰钻布鲁斯",
+            "奔波鼠",
+            "幻影灵菇",
+            "恶魔红钻"
+          ]
+        }
+      ],
+      "spiritIds": [
+        "pet_000451",
+        "pet_000006",
+        "pet_000277",
+        "pet_000132",
+        "pet_000349",
+        "pet_000325",
+        "pet_000505",
+        "pet_000015",
+        "pet_000120",
+        "pet_000040",
+        "pet_000225",
+        "pet_000433",
+        "pet_000375",
+        "pet_000182",
+        "pet_000217",
+        "pet_000213",
+        "pet_000133",
+        "pet_000158"
+      ]
     }
   ]
 }
