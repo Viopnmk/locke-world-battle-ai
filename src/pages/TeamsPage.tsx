@@ -185,6 +185,35 @@ function TeamCard({
         <span className="team-card__size">6 只</span>
       </header>
 
+      {/* 图鉴预览条：开头先让用户一眼看清这套阵容是哪六只 */}
+      <div className="team-card__roster-strip" role="list" aria-label={`${preset.name} 的六只精灵`}>
+        {preset.members.map((member) => {
+          const spirit = presetSpirit(member.spiritId);
+          if (!spirit) return null;
+          const isLead = member.spiritId === preset.lead.spiritId;
+          return (
+            <button
+              key={member.spiritId}
+              type="button"
+              role="listitem"
+              className={`roster-strip__item${isLead ? ' is-lead' : ''}`}
+              onClick={() => onOpenBuild(spirit)}
+              aria-label={`${isLead ? '起手第一只 ' : ''}${spirit.name}，查看培养方案`}
+            >
+              <span className="roster-strip__thumb">
+                <img src={spirit.avatar} alt={spirit.name} loading="lazy" decoding="async" />
+                {isLead ? (
+                  <span className="roster-strip__lead" aria-hidden="true">
+                    首
+                  </span>
+                ) : null}
+              </span>
+              <span className="roster-strip__name">{shortName(spirit.name)}</span>
+            </button>
+          );
+        })}
+      </div>
+
       <p className="team-card__summary">{preset.summary}</p>
 
       <div className="team-card__tags">

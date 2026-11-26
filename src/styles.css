@@ -3075,6 +3075,97 @@ a {
   padding: 4px 9px;
 }
 
+/* 六只图鉴预览条：卡片开头一行 6 列，浅灰圆角方块头像 + 下方名称 */
+.team-card__roster-strip {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.roster-strip__item {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+  padding: 0;
+  border: 0;
+  background: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.roster-strip__thumb {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 10px;
+  background: #f3f4f6;
+  overflow: hidden;
+  box-shadow: inset 0 0 0 1px rgba(47, 58, 53, 0.05);
+}
+
+.roster-strip__thumb img {
+  width: 100%;
+  height: 100%;
+  padding: 3px;
+  object-fit: contain;
+}
+
+.roster-strip__item.is-lead .roster-strip__thumb {
+  box-shadow: inset 0 0 0 2px var(--accent);
+}
+
+.roster-strip__lead {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  padding: 0 3px;
+  border-radius: 4px;
+  background: var(--accent);
+  color: #fffdf8;
+  font-size: 8px;
+  line-height: 12px;
+  font-weight: 700;
+}
+
+.roster-strip__name {
+  max-width: 100%;
+  font-size: 11px;
+  line-height: 1.2;
+  color: var(--ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.roster-strip__item.is-lead .roster-strip__name {
+  color: var(--accent-deep);
+  font-weight: 700;
+}
+
+.roster-strip__item:active .roster-strip__thumb {
+  transform: scale(0.96);
+}
+
+.roster-strip__item:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+
+@media (max-width: 380px) {
+  .team-card__roster-strip {
+    gap: 5px;
+  }
+
+  .roster-strip__name {
+    font-size: 10.5px;
+  }
+}
+
 .team-card__summary {
   margin: 0;
   font-size: 12.8px;
