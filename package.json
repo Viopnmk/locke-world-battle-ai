@@ -17,7 +17,8 @@
     "screen:mixed": "npx esbuild scripts/screen-mixed.ts --bundle --platform=node --format=esm --outfile=.cache/screen-mixed.mjs && node .cache/screen-mixed.mjs",
     "rotate:teams": "npx esbuild scripts/rotate-teams.ts --bundle --platform=node --format=esm --outfile=.cache/rotate-teams.mjs && node .cache/rotate-teams.mjs",
     "verify:build-guide": "npx esbuild scripts/verify-build-guide.ts --bundle --platform=node --format=esm --outfile=.cache/verify-build-guide.mjs && node .cache/verify-build-guide.mjs",
-    "test:audit": "npx esbuild scripts/test-team-audit.ts --bundle --platform=node --format=esm --outfile=.cache/test-team-audit.mjs && node .cache/test-team-audit.mjs"
+    "test:audit": "npx esbuild scripts/test-team-audit.ts --bundle --platform=node --format=esm --outfile=.cache/test-team-audit.mjs && node .cache/test-team-audit.mjs",
+    "verify:matchups": "npx esbuild scripts/verify-matchups.ts --bundle --platform=node --format=esm --outfile=.cache/verify-matchups.mjs && node .cache/verify-matchups.mjs"
   },
   "dependencies": {
     "react": "18.3.1",

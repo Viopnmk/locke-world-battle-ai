@@ -17,6 +17,7 @@ import { names, teamPlanMetrics } from '../lib/team-plan';
 import { meta } from '../lib/spirits';
 import type { Spirit } from '../lib/types';
 import { tint, typeColor } from '../lib/typeChart';
+import { TeamMatchupPanel } from '../components/TeamMatchupPanel';
 
 type Filter = 'all' | string;
 
@@ -65,12 +66,13 @@ export function TeamsPage({ onOpenBuild, onImport }: Props) {
         </h2>
         <p className="ai__lead">
           每 {ROTATION_INTERVAL_HOURS} 小时由全图鉴（{meta.spiritCount} 条形态记录）重新组 3 套<strong>全新</strong>阵容：高爆发输出、均衡攻防、能量经济与持续作战。
-          每套都写明<strong>起手第一只、六只分工与每人 4 个技能、逐只能量明细（上场 / 技能 / 回能 / 10 点上限）、六项团队配合分析、核心联动与 5 阶段战术链</strong>；
+          每套都写明<strong>起手第一只、敌方 18 系换宠与出招、六只分工与每人 4 个技能、逐只能量明细（上场 / 技能 / 回能 / 10 点上限）、六项团队配合分析、核心联动与 5 阶段战术链</strong>；
           特性与技能全部取自 BWIKI 原文，数字用「对战」页同一个本地引擎现算。
         </p>
         <div className="engine-pills">
           <span className="engine-pill">🔄 每 {ROTATION_INTERVAL_HOURS} 小时换 3 套</span>
           <span className="engine-pill">🥇 起手第一只</span>
+          <span className="engine-pill">🛡️ 敌方 18 系换宠出招</span>
           <span className="engine-pill">🎯 六人分工 + 4 技能</span>
           <span className="engine-pill">⚡ 逐只能量明细</span>
           <span className="engine-pill">🧠 六项配合分析</span>
@@ -315,6 +317,9 @@ function TeamCard({
           </p>
         </section>
       ) : null}
+
+      {/* 敌方 18 系：换哪只、技能怎么放 */}
+      <TeamMatchupPanel preset={preset} onOpenBuild={onOpenBuild} />
 
       {/* 能量分配 */}
       <section className="team-section team-energy" aria-label="能量分配">
