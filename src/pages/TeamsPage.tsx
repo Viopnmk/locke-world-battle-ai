@@ -140,6 +140,12 @@ export function TeamsPage({ onOpenBuild, onImport }: Props) {
             换人不额外扣能量、只花一回合（官方手册未写明扣能量，按待实测处理）。
           </li>
           <li>
+            <strong>敌方 18 系换宠与出招</strong>（<code>src/lib/team-matchup.ts</code>）纯现算：对每个系，按「承受该系攻击的倍率 +
+            4 招对它的最高克制倍率 + 速度 + 入场能量」给 6 只打分，取最高者上场、再取更抗的一只当退路；出招链只排该成员真实的
+            4 个推荐技能，能量账一步步算（10 点上限、聚能 +5），「使用后消耗全部生命」的换命招不进链；全队没有 0.5 倍抗性时照实写。
+            <code>npm run verify:matchups</code> 会把 3 套 × 18 系 = 54 条全部反算一遍。
+          </li>
+          <li>
             <strong>配招</strong>先点特性再挑招：特性要迸发 / 回能 / 0 费 / 某系技能，就把能点亮它的技能选进 4 招；
             点不亮就在卡片上写「本套未触发」。血脉技能互斥，一只精灵最多 1 个（<code>equip-rules.ts</code>）。
           </li>
