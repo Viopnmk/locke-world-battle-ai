@@ -8,10 +8,15 @@
  *      里存在能 ×2 反制的攻击招的，最终 4 格必须至少包含 1 个反克制招；
  *   3) slots 里的血脉技与 guide.bloodline.main 完全一致，且血脉技数量 ≤ 1。
  *
+ * 新增（阵容一致性门禁）：
+ *   4) 当期阵容里的每一只，培养页默认流派（burst）与耐久流派（bulk）的四招
+ *      都必须与 src/data/team-rotation.json 中该成员的技能完全一致（同技能、同顺序）；
+ *      阵容侧为了触发特性/收割没带 ×2 反克招时，不再判为「反克制缺失」。
+ *
  *   npx esbuild scripts/verify-build-guide.ts --bundle --platform=node --format=esm --outfile=.cache/verify-build-guide.mjs
  *   node .cache/verify-build-guide.mjs
  */
-import { buildGuide, bloodlineTable, natureTable, natures } from '../src/lib/build-guide';
+import { buildGuide, bloodlineTable, natureTable, natures, teamAlignmentOf } from '../src/lib/build-guide';
 import { skillById, skillsOf, spirits } from '../src/lib/spirits';
 import { matchup, TYPE_ORDER } from '../src/lib/typeChart';
 import type { PresetKey } from '../src/lib/build-guide';
@@ -46,6 +51,8 @@ const stats = {
   noCounterAnywhere: 0,
   bloodEquipped: 0,
   bloodNotEquipped: 0,
+  aligned: 0,
+  alignedMatched: 0,
 };
 
 for (const spirit of spirits) {
@@ -84,6 +91,26 @@ for (const spirit of spirits) {
     }
     const ids = new Set(guide.slots.map((s) => s.skill.id));
     if (ids.size !== guide.slots.length) problems.push(`${spirit.name}/${preset}: duplicate skills`);
+
+    /* 门禁 0：阵容里的精灵，四招必须与阵容页 100% 一致（同技能、同顺序） */
+    const alignment = teamAlignmentOf(spirit.id);
+    if (alignment) {
+      stats.aligned += 1;
+      const got = guide.slots.map((s) => s.skill.name);
+      const same =
+        got.length === alignment.skillNames.length && alignment.skillNames.every((n, i) => n === got[i]);
+      if (!guide.aligned) problems.push(`${spirit.name}/${preset}: 在当期阵容里却没标记 aligned`);
+      else if (guide.aligned.teamId !== alignment.teamId) problems.push(`${spirit.name}/${preset}: aligned.teamId 不对`);
+      if (!same) {
+        problems.push(
+          `${spirit.name}/${preset}: 培养页四招与阵容推荐不一致 → 阵容 ${alignment.skillNames.join('/')} ≠ 培养 ${got.join('/')}`,
+        );
+      } else {
+        stats.alignedMatched += 1;
+      }
+    } else if (guide.aligned) {
+      problems.push(`${spirit.name}/${preset}: 不在阵容里却标了 aligned`);
+    }
     for (const slot of guide.slots) {
       const legal = learnable.has(slot.skill.id) || (slot.skill.learn === 2 && grantable.has(slot.skill.id));
       if (!legal) problems.push(`${spirit.name}: ${slot.skill.name} not in its own learnset`);
@@ -103,7 +130,8 @@ for (const spirit of spirits) {
     if (guide.ivs.length !== 3) problems.push(`${spirit.name}/${preset}: ${guide.ivs.length} ivs`);
     if (new Set(guide.ivs.map((i) => i.key)).size !== guide.ivs.length) problems.push(`${spirit.name}: duplicate ivs`);
 
-    /* 门禁 2：有弱点 + 合法池里有 ×2 反克招 → 四格里必须有至少一个 */
+    /* 门禁 2：有弱点 + 合法池里有 ×2 反克招 → 四格里必须有至少一个
+       （例外：精灵在当期阵容里时，四招取自阵容，阵容侧为特性/收割没带反克招不算缺失） */
     if (!weakTypes.length) {
       stats.withoutWeakness += 1;
       if (guide.counter.hasWeakness) problems.push(`${spirit.name}/${preset}: 无弱点却标了 hasWeakness`);
@@ -116,20 +144,25 @@ for (const spirit of spirits) {
       stats.counterAvailable += 1;
       if (!regularCounterPool.length) stats.counterOnlyByBlood += 1;
       if (!slotCounters.length) {
-        problems.push(
-          `${spirit.name}/${preset}: 弱点 ${weakTypes.join('、')} 在可学池里有 ×2 反克招（${counterPool
-            .slice(0, 4)
-            .map((s) => `${s.type}系「${s.name}」`)
-            .join('、')}），四格却没带任何一个`,
-        );
+        if (!guide.aligned) {
+          problems.push(
+            `${spirit.name}/${preset}: 弱点 ${weakTypes.join('、')} 在可学池里有 ×2 反克招（${counterPool
+              .slice(0, 4)
+              .map((s) => `${s.type}系「${s.name}」`)
+              .join('、')}），四格却没带任何一个`,
+          );
+        }
       } else {
         stats.counterInSlots += 1;
         if (guide.slots[1] && weakTypes.some((w) => hits(guide.slots[1].skill, w))) stats.counterSlotIsSecond += 1;
         if (slotCounters.some((s) => s.skill.learn === 2)) stats.counterFromBlood += 1;
       }
-      if (!guide.counter.locked) problems.push(`${spirit.name}/${preset}: counter.locked 为空`);
-      else if (!weakTypes.some((w) => guide.counter.locked!.covered.includes(w))) {
+      if (!guide.counter.locked) {
+        if (!guide.aligned) problems.push(`${spirit.name}/${preset}: counter.locked 为空`);
+      } else if (!weakTypes.some((w) => guide.counter.locked!.covered.includes(w))) {
         problems.push(`${spirit.name}/${preset}: counter.locked 的覆盖属性与弱点对不上`);
+      } else if (!slotCounters.length) {
+        problems.push(`${spirit.name}/${preset}: counter.locked 指向的招式不在四格里`);
       }
     } else {
       stats.noCounterAnywhere += 1;
@@ -185,6 +218,7 @@ console.log(`合法池里有 ×2 反克招的方案：${stats.counterAvailable}�
 console.log(`四格带上反克招：${stats.counterInSlots}（${pct(stats.counterInSlots, stats.counterAvailable)}）；反克制位落在第 2 格：${stats.counterSlotIsSecond}；靠血脉拿到反克制：${stats.counterFromBlood}`);
 console.log(`全合法池都没有反克招、诚实退回补盲：${stats.noCounterAnywhere}`);
 console.log(`改血脉卡片：已装备 ${stats.bloodEquipped} ／ 不改血脉 ${stats.bloodNotEquipped}`);
+console.log(`阵容对齐：当期阵容里的方案 ${stats.aligned}（其中四招同序完全一致 ${stats.alignedMatched}）`);
 for (const p of problems.slice(0, 40)) console.log(' -', p);
 if (problems.length) process.exit(1);
 console.log('OK');

@@ -210,6 +210,11 @@ export function BuildPage({ spiritId, pickOpen, onOpenPick, onClosePick, onPick 
             <span className="build-card__role">
               {guide.roleLabel} · {guide.presetLabel}
             </span>
+            {guide.aligned ? (
+              <span className="build-card__sync" title="四招取自阵容推荐，同技能同顺序">
+                阵容同款 · {guide.aligned.teamName}
+              </span>
+            ) : null}
           </div>
 
           <div className="build-grid" aria-label="四个携带技能，点按查看说明">
@@ -277,9 +282,11 @@ export function BuildPage({ spiritId, pickOpen, onOpenPick, onClosePick, onPick 
           <p className="skill-notes__counter">
             {guide.counter.locked
               ? `反克制位：${guide.counter.locked.type}系 ×2 克制 ${guide.counter.locked.covered.join('、')}（第 ${guide.counter.locked.slotIndex} 格${guide.counter.locked.fromBlood ? ' · 血脉' : ''}）`
-              : guide.counter.hasWeakness
-                ? '反克制位：可学池无 ×2 反克招，改成补盲'
-                : '反克制位：没有弱点，不设'}
+              : guide.aligned
+                ? `反克制位：与阵容推荐同款四招，按「${guide.aligned.role}」的分工没带 ×2 反克招`
+                : guide.counter.hasWeakness
+                  ? '反克制位：可学池无 ×2 反克招，改成补盲'
+                  : '反克制位：没有弱点，不设'}
           </p>
           <ol className="skill-notes__list">
             {guide.slots.map((slot, index) => (
@@ -433,7 +440,9 @@ export function BuildPage({ spiritId, pickOpen, onOpenPick, onClosePick, onPick 
       <section className="panel panel--quiet build__note">
         <h2 className="panel__title">这套方案是怎么来的</h2>
         <ul>
-          <li>技能：先算这只精灵的防御弱点（克制表里能打它 ≥2 倍的属性），四格按「本系主攻 → 反克制（×2 打穿克制自己的属性，优先异属性）→ 第二本系/补盲 → 辅助」排序；被已经在场的招完全压制的技能（又贵又弱）不进推荐。</li>
+          <li>
+            技能：这只精灵在当期阵容推荐里时，四招直接取阵容推荐为它选的那 4 个（同技能、同顺序），48 小时轮换产出新阵容后培养页自动跟着变；其余精灵按「本系主攻 → 反克制（×2 打穿克制自己的属性，优先异属性）→ 第二本系/补盲 → 辅助」排序，被已经在场的招完全压制的技能（又贵又弱）不进推荐。
+          </li>
           <li>反克制：只认 BWIKI 克制表真实倍率，可学池（升级 / 技能石 / 19 个血脉候选）里没有 ×2 反克招时，就诚实改成补盲并在说明里写清楚，不编一个克制关系。</li>
           <li>性格：只改两项，+10% 给主输出或速度/生命，-10% 给用不上的那项；个体值只点 3 项，不摊薄。</li>
           <li>血脉：一只精灵只有一个血脉，18 系别血脉 + 普通血脉的 19 个血脉技能只能选 1 个；全库先按同一条规则择优保留 1 个，其余血脉技能直接不进候选池。常规学习面反制不了弱点时，这唯一名额优先给能反制的血脉技。</li>

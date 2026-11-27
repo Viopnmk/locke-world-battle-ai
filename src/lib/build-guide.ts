@@ -10,6 +10,10 @@
  * 这里只有两类东西：图鉴原值，以及在这些原值上做的加减乘除。
  * 百分比口径（10% / 20%）来自游戏内说明，Wiki 只列提升/降低项，界面上会写清楚。
  *
+ * 唯一的例外是「阵容对齐」：当期 48 小时轮换阵容里的 18 只精灵，四格直接取阵容推荐为它
+ * 选出的 4 招（同技能、同顺序），其余（性格/个体值/防御弱点说明）照本流派自己算。
+ * 阵容数据每 48 小时由 scripts/rotate-teams.ts 重算，所以培养页永远跟着最新阵容走。
+ *
  * 配招的四格顺序（四格都只用它自己学得到的技能）：
  *   1 主攻    本系里综合效率最高的一招
  *   2 反克制  能对「打得动自己的属性」打出 ≥2 倍的攻击招（优先异属性，避免本系被一项抵抗全挡）
@@ -19,11 +23,13 @@
  */
 import bloodlinesData from '../data/bloodlines.json';
 import naturesData from '../data/natures.json';
+import rotationData from '../data/team-rotation.json';
 import { spiritMetrics } from './analysis';
 import type { StatKey } from './analysis';
 import { BLOODLINE_RULE_NOTE, BLOODLINE_SKILL_LIMIT } from './equip-rules';
 import { skillById, skillsOf, spirits } from './spirits';
 import { matchup, TYPE_ORDER } from './typeChart';
+import type { TeamRotationFile } from './team-types';
 import type { BloodlineTable, Nature, NatureTable, ResolvedSkill, Skill, Spirit } from './types';
 
 export { BLOODLINE_SKILL_LIMIT, BLOODLINE_RULE_NOTE };
@@ -306,6 +312,300 @@ function natureLine(n: Nature): string {
   return `「${n.up} +10%，${n.down} -10%」`;
 }
 
+/* ------------------------------------------------------------------ 阵容对齐 */
+
+/**
+ * 当期 48 小时轮换阵容里这只精灵的位置。
+ * 数据来自 src/data/team-rotation.json（由 scripts/rotate-teams.ts 每 48 小时重算一次并 baked 进静态包），
+ * 所以「阵容推荐」页看到的四招，就是培养页这里的四招；轮换后培养页会自动跟着变。
+ */
+export interface TeamAlignment {
+  round: number;
+  teamId: string;
+  teamName: string;
+  category: string;
+  /** 队内分工：先手 / 核心输出 / 控制 / 辅助 / 承伤 / 收割 */
+  role: string;
+  /** 技能名，顺序与阵容页完全一致 */
+  skillNames: string[];
+}
+
+const ROTATION = rotationData as unknown as TeamRotationFile;
+
+const TEAM_ALIGNMENT = new Map<string, TeamAlignment>();
+for (const team of ROTATION.teams) {
+  for (const member of team.members) {
+    if (TEAM_ALIGNMENT.has(member.spiritId)) continue;
+    TEAM_ALIGNMENT.set(member.spiritId, {
+      round: ROTATION.round,
+      teamId: team.id,
+      teamName: team.name,
+      category: team.category,
+      role: member.role,
+      skillNames: member.skills.map((s) => s.name),
+    });
+  }
+}
+
+/** 这只精灵在不在当期轮换阵容里；在的话四招必须与阵容页完全一致。 */
+export function teamAlignmentOf(spiritId: string): TeamAlignment | null {
+  return TEAM_ALIGNMENT.get(spiritId) ?? null;
+}
+
+interface TeamSkillHit {
+  skill: ResolvedSkill;
+  /** 只有靠改血脉才能拿到这一招时才有值 */
+  blood: { blood: string; level: number | null } | null;
+}
+
+/** 这一招是改哪个血脉拿到的（在它的血脉学习面里按技能 id 反查）。 */
+function bloodGrantOf(spirit: Spirit, skill: Skill): { blood: string; level: number | null } | null {
+  const setName = bloodlineTable.learnset[spirit.learnset ?? ''] ?? '';
+  const set = bloodlineTable.sets[setName] ?? {};
+  for (const [blood, sid] of Object.entries(set)) {
+    if (sid === skill.id) return { blood, level: bloodlineTable.levels[blood] ?? null };
+  }
+  return null;
+}
+
+/** 阵容里写的技能名 → 这只精灵真正能带的技能：自带学习面优先，其次是改血脉能换到的那一招。 */
+function teamSkillFor(spirit: Spirit, name: string): TeamSkillHit | null {
+  const own = skillsOf(spirit);
+  const regular = own.find((s) => s.name === name && s.learn !== 2);
+  if (regular) return { skill: regular, blood: null };
+  const inherited = own.find((s) => s.name === name && s.learn === 2);
+  if (inherited) return { skill: inherited, blood: bloodGrantOf(spirit, inherited) };
+  const setName = bloodlineTable.learnset[spirit.learnset ?? ''] ?? '';
+  for (const [blood, sid] of Object.entries(bloodlineTable.sets[setName] ?? {})) {
+    const sk = skillById(sid);
+    if (!sk || sk.name !== name) continue;
+    const level = bloodlineTable.levels[blood] ?? null;
+    return { skill: { ...sk, learn: 2, level: level ?? undefined }, blood: { blood, level } };
+  }
+  return null;
+}
+
+/** 特性原文和技能原文里同时出现的机制词（迸发 / 萌化 / 连击…）——两边原文都有这个字，不是推测。 */
+const SHARED_MECHANICS = ['迸发', '连击', '萌化', '蓄力', '冻结', '灼烧', '中毒', '寄生', '麻痹', '迅捷', '减伤', '回复', '能量'];
+
+function sharedMechanic(spirit: Spirit, sk: Skill): string | null {
+  const trait = spirit.trait?.effect ?? '';
+  const effect = sk.effect ?? '';
+  if (!trait || !effect) return null;
+  for (const word of SHARED_MECHANICS) {
+    if (trait.includes(word) && effect.includes(word)) return word;
+  }
+  return null;
+}
+
+/** 图鉴原文直接引用时去掉句尾标点 */
+function effectText(sk: Skill): string {
+  const text = (sk.effect ?? '').replace(/[。；;，,\s]+$/, '');
+  if (!text) return '变化技能';
+  return text.length > 36 ? `${text.slice(0, 36)}…` : text;
+}
+
+/** 有条件/代价的攻击招（「若敌方能量等于0」「敌方每有1能量」）把原文写进来，收割位就靠这些机制。 */
+const CONDITIONAL_EFFECT = /若|每有|每层|倍伤害|倍|等于|低于|高于/;
+
+function teamSlotReason(
+  spirit: Spirit,
+  sk: Skill,
+  counters: string[],
+  head: string,
+  bloodLabel: string | null,
+): string {
+  const damaging = isDamaging(sk);
+  const parts: string[] = [];
+  parts.push(
+    damaging
+      ? `${sk.type}系${sk.category}，威力 ${sk.power}、能耗 ${stars(sk.energy)}`
+      : `${sk.type}系变化，能耗 ${stars(sk.energy)}`,
+  );
+  if (bloodLabel) parts.push(bloodLabel);
+  if (damaging && spirit.type.includes(sk.type)) parts.push('本系加成');
+  if (counters.length) {
+    parts.push(`×2 反制弱点 ${counters.join('、')}`);
+  } else if (damaging) {
+    const supers = superTypesOf(sk.type);
+    parts.push(
+      supers.length
+        ? `×2 克制 ${supers.slice(0, 5).join('、')}${supers.length > 5 ? ' 等' : ''}`
+        : '没有 ×2 克制面，靠威力与能耗硬打',
+    );
+  }
+  /* 有条件、有代价的技能（「若敌方能量等于 0，造成 20 倍」「敌方每有 1 能量威力 -10%」）直接引原文 */
+  if (!damaging || CONDITIONAL_EFFECT.test(sk.effect ?? '')) parts.push(`图鉴原文：${effectText(sk)}`);
+  const word = sharedMechanic(spirit, sk);
+  if (word && spirit.trait) parts.push(`特性「${spirit.trait.name}」正好管到「${word}」这一环`);
+  return `${head}：${parts.join('；')}。`;
+}
+
+/**
+ * 把本流派算出来的方案改成「阵容同款」：四招与顺序取阵容推荐，
+ * 反克制结论、改血脉卡片与详细模式里提到四招的句子跟着改；性格/个体值/弱点表保持本流派自己的算法。
+ */
+function alignWithTeam(base: BuildGuide, spirit: Spirit, team: TeamAlignment): BuildGuide {
+  const resolved = team.skillNames.map((name) => teamSkillFor(spirit, name));
+  /* 技能名跟数据对不上（阵容数据坏了）就退回本流派自己的配招，门禁脚本会把这条差异报出来 */
+  if (resolved.length !== 4 || resolved.some((hit) => hit === null)) return base;
+
+  const weakTypes = base.weaknesses.map((w) => w.type);
+  const ownTypeText = spirit.type.filter(Boolean).join('、');
+  const tag = `第 ${team.round} 轮《${team.teamName}》${team.role}位`;
+
+  const slots: BuildSlot[] = [];
+  resolved.forEach((hit, index) => {
+    const { skill, blood } = hit!;
+    const damaging = isDamaging(skill);
+    const stab = spirit.type.includes(skill.type);
+    const counters = counterHitsOf(skill, weakTypes);
+    let slotLabel: string;
+    let kind: SlotKind;
+    if (!damaging) {
+      slotLabel = '辅助';
+      kind = 'support';
+    } else if (index === 0) {
+      slotLabel = '主攻';
+      kind = 'primary';
+    } else if (counters.length) {
+      slotLabel = '反克制';
+      kind = 'counter';
+    } else if (stab) {
+      slotLabel = '第二输出';
+      kind = 'second';
+    } else {
+      slotLabel = '补盲';
+      kind = 'fill';
+    }
+    const bloodLabel =
+      skill.learn === 2 && blood
+        ? blood.blood === '普通'
+          ? `普通血脉技能${blood.level ? `（Lv.${blood.level}）` : ''}`
+          : `改${blood.blood}血脉取得${blood.level ? `（Lv.${blood.level}）` : ''}`
+        : null;
+    const head = `阵容同款·第 ${index + 1} 格（第 ${team.round} 轮《${team.teamName}》${team.role}位，与阵容页同技能同顺序）`;
+    slots.push({
+      skill,
+      source: SOURCE_LABEL[skill.learn] ?? '升级',
+      slot: slotLabel,
+      kind,
+      reason: teamSlotReason(spirit, skill, counters, head, bloodLabel),
+    });
+  });
+
+  /* ---- 反克制结论：照阵容的四招重算，不带反克招时把原因写清楚（不报「需复核」） */
+  const lockedIdx = (() => {
+    let best = -1;
+    let bestScore = 0;
+    slots.forEach((s, i) => {
+      const hitsHere = counterHitsOf(s.skill, weakTypes).length;
+      if (!hitsHere) return;
+      /* 能反制几个弱点优先，其次越疼越好（收割位会带上便宜的收尾招，不能让它顶替主输出） */
+      const score = hitsHere * 10000 + (s.skill.power ?? 0);
+      if (score > bestScore) {
+        best = i;
+        bestScore = score;
+      }
+    });
+    return best;
+  })();
+  const lockedSlot = lockedIdx >= 0 ? slots[lockedIdx] : null;
+  const lockedHits = lockedSlot ? counterHitsOf(lockedSlot.skill, weakTypes) : [];
+  const counterNote = !weakTypes.length
+    ? `这四招与阵容推荐${tag}完全一致；${spirit.name} 在克制表里没有 ×2 弱点（${ownTypeText}系），所以四格不设反克制位。`
+    : lockedSlot
+      ? `这四招与阵容推荐${tag}完全一致；反克制由第 ${lockedIdx + 1} 格「${lockedSlot.skill.name}」（${lockedSlot.source}）承担，${lockedSlot.skill.type} 系对 ${lockedHits.join('、')} 打出 ×2，正好反制能打穿${ownTypeText}系的属性。`
+      : base.counter.poolTypes.length
+        ? `这四招与阵容推荐${tag}完全一致：阵容侧按「${team.role}」的分工没带 ×2 反制 ${weakTypes.join('、')} 的攻击招（全合法池里有 ${base.counter.poolTypes.join('、')} 系可反制）。培养页照阵容同步，不另配一套，免得两边又打架。`
+        : `这四招与阵容推荐${tag}完全一致；全合法池（升级 / 技能石 / 19 个血脉候选）里也没有能 ×2 反制 ${weakTypes.join('、')} 的攻击招。`;
+  const counter: CounterPlan = {
+    hasWeakness: weakTypes.length > 0,
+    poolTypes: base.counter.poolTypes,
+    locked: lockedSlot
+      ? {
+          name: lockedSlot.skill.name,
+          type: lockedSlot.skill.type,
+          covered: lockedHits,
+          fromBlood: lockedSlot.skill.learn === 2,
+          slotIndex: lockedIdx + 1,
+        }
+      : null,
+    note: counterNote,
+  };
+
+  /* ---- 改血脉卡片：阵容带血脉技就同步填好，没带就明说不改血脉 */
+  const bloodIndex = slots.findIndex((s) => s.skill.learn === 2);
+  const bloodSlot = bloodIndex >= 0 ? slots[bloodIndex] : null;
+  const equippedBlood: { blood: string; level: number | null } | null = bloodSlot
+    ? bloodGrantOf(spirit, bloodSlot.skill) ?? { blood: '普通', level: null }
+    : null;
+  const mainBlood: BloodPick = equippedBlood && bloodSlot
+    ? {
+        blood: equippedBlood.blood,
+        skill: bloodSlot.skill,
+        level: equippedBlood.level,
+        kind: !isDamaging(bloodSlot.skill) ? '功能' : spirit.type.includes(bloodSlot.skill.type) ? '本系' : '补盲',
+        reason:
+          equippedBlood.blood === '普通'
+            ? `阵容推荐${tag}四招里的「${bloodSlot.skill.name}」是普通血脉技能${equippedBlood.level ? `，Lv.${equippedBlood.level} 可学` : ''}，占一个血脉技能位。`
+            : `阵容推荐${tag}用这唯一的血脉名额换「${bloodSlot.skill.name}」：改${equippedBlood.blood}血脉拿到，Lv.${equippedBlood.level ?? 15} 可学。`,
+        value: 0,
+        equipped: true,
+        slotIndex: bloodIndex + 1,
+      }
+    : {
+        blood: base.bloodline.main.blood,
+        skill: base.bloodline.main.skill,
+        level: base.bloodline.main.level,
+        kind: base.bloodline.main.kind,
+        reason: `阵容推荐${tag}的四招不需要血脉技，培养页保持普通血脉。`,
+        value: 0,
+        equipped: false,
+        slotIndex: null,
+      };
+  const variantsNote = base.variants.length
+    ? ` 同族另有 ${base.variants.length} 个形态分支（${base.variants
+        .slice(0, 3)
+        .map((v) => v.formLabel || baseName(v.name))
+        .join('、')}${base.variants.length > 3 ? '…' : ''}），种族值分布不同，方案要按具体形态重算。`
+    : '';
+  const bloodlineNote =
+    (equippedBlood ? `血脉技能在 Lv.${equippedBlood.level ?? 15} 解锁。` : '') + BLOODLINE_RULE_NOTE + variantsNote;
+  const bloodlineExplanation = mainBlood.equipped
+    ? `${spirit.name} 在当期阵容推荐（${tag}）里带了血脉技「${mainBlood.skill.name}」（${
+        mainBlood.blood === '普通'
+          ? `普通血脉技能${mainBlood.level ? `，Lv.${mainBlood.level} 可学` : ''}`
+          : `改${mainBlood.blood}血脉拿到，Lv.${mainBlood.level ?? 15} 可学`
+      }），培养页照阵容同步，放在第 ${mainBlood.slotIndex} 格。一套配招最多 1 个血脉技，四格里不会再出现第二个。`
+    : `${spirit.name} 在当期阵容推荐（${tag}）里没有血脉技，培养页就不加带血脉技能、保持普通血脉。` +
+      (base.bloodline.main.blood !== '普通'
+        ? `全库单独算下来收益最高的是${base.bloodline.main.blood}血脉「${base.bloodline.main.skill.name}」，但一套配招只带 1 个血脉技，阵容侧没选它。`
+        : 'Wiki 里这只精灵没有可用的血脉技能表。');
+
+  /* ---- 详细模式：把提到四招与改血脉的那两句换成阵容口径 */
+  const alignLine = `四个技能直接取「阵容推荐」${tag}的配招，同技能同顺序：${slots
+    .map((s) => s.skill.name)
+    .join(' / ')}；48 小时轮换产出新阵容后，这里会自动跟着变，不用手动同步。`;
+  const summary = base.summary.map((line) => {
+    if (line.startsWith('四个技能的顺序是')) return alignLine;
+    if (line === base.bloodline.explanation) return bloodlineExplanation;
+    if (line.startsWith('流派切换：')) {
+      return `流派切换：${PRESETS.map((p) => `${p.label}（${p.hint}）`).join(' / ')}——这只精灵在阵容推荐里，四招固定跟随阵容，切流派只重算性格、个体值与说明。`;
+    }
+    return line;
+  });
+
+  return {
+    ...base,
+    slots,
+    counter,
+    bloodline: { main: mainBlood, options: [mainBlood], note: bloodlineNote, explanation: bloodlineExplanation },
+    summary,
+    aligned: { ...team },
+  };
+}
+
 /* ------------------------------------------------------------------ 输出结构 */
 
 export type SlotKind = 'primary' | 'counter' | 'second' | 'support' | 'fill';
@@ -377,6 +677,8 @@ export interface BuildGuide {
   bloodline: { main: BloodPick; options: BloodPick[]; note: string; explanation: string };
   variants: FormVariant[];
   summary: string[];
+  /** 在当期轮换阵容里时：四招与阵容推荐完全一致；不在阵容里为 null */
+  aligned: TeamAlignment | null;
 }
 
 function toSlot(sk: ResolvedSkill, slot: string, kind: SlotKind, reason: string): BuildSlot {
@@ -385,7 +687,11 @@ function toSlot(sk: ResolvedSkill, slot: string, kind: SlotKind, reason: string)
 
 /* ------------------------------------------------------------------ 主函数 */
 
-export function buildGuide(spirit: Spirit, preset: PresetKey = 'burst'): BuildGuide {
+/**
+ * 本流派自己的配招算法（全库 665 只都走这里）。
+ * 对外不要直接调用——用下面的 buildGuide()，它会把阵容里的 18 只换成阵容同款四招。
+ */
+function buildGuideBaseline(spirit: Spirit, preset: PresetKey = 'burst'): BuildGuide {
   const m = spiritMetrics(spirit);
   const atk = spirit.stats.atk ?? 0;
   const spa = spirit.stats.spa ?? 0;
@@ -883,5 +1189,19 @@ export function buildGuide(spirit: Spirit, preset: PresetKey = 'burst'): BuildGu
     },
     variants,
     summary,
+    aligned: null,
   };
+}
+
+/**
+ * 培养页入口。
+ * 当期 48 小时轮换阵容里的精灵：四招直接取「阵容推荐」为它选的 4 招（同技能、同顺序），
+ * 其余（性格 / 个体值 / 防御弱点说明）仍按本流派自己算。
+ * 其余 647 只：用本流派自己的「优先反克制弱点 + 真实说明」配招。
+ */
+export function buildGuide(spirit: Spirit, preset: PresetKey = 'burst'): BuildGuide {
+  const base = buildGuideBaseline(spirit, preset);
+  const alignment = teamAlignmentOf(spirit.id);
+  if (!alignment) return base;
+  return alignWithTeam(base, spirit, alignment);
 }
