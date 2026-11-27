@@ -16,7 +16,8 @@ import path from 'node:path';
 import { ENERGY_CAP, GATHER_GAIN } from '../src/lib/energy';
 import { buildTeamMatchup, fmtMult, SPEED_TIERS, weakestType } from '../src/lib/team-matchup';
 import type { MatchupCandidate, TypeMatchupPlan } from '../src/lib/team-matchup';
-import { skillsOf, spiritsById } from '../src/lib/spirits';
+import { carriedSkills } from '../src/lib/carried-skills';
+import { spiritsById } from '../src/lib/spirits';
 import { matchup, TYPE_ORDER } from '../src/lib/typeChart';
 import type { TeamPreset, TeamRotationFile } from '../src/lib/team-types';
 
@@ -44,7 +45,8 @@ function independentScore(preset: TeamPreset, spiritId: string, enemyType: strin
   const member = preset.members.find((m) => m.spiritId === spiritId);
   const spirit = spiritsById.get(spiritId);
   if (!member || !spirit) return null;
-  const learned = skillsOf(spirit);
+  /* 与培养板块同口径：自带学习面 + 改血脉能换到的 19 选 1 */
+  const learned = carriedSkills(spirit);
   const skills = member.skills
     .map((ref) => learned.find((s) => s.name === ref.name))
     .filter((s): s is NonNullable<typeof s> => Boolean(s));

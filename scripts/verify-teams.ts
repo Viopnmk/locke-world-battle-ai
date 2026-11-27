@@ -18,6 +18,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { auditRotation } from './lib/team-audit';
+import { buildGuide } from '../src/lib/build-guide';
+import { spiritsById } from '../src/lib/spirits';
 import { ENERGY_RULES, GATHER_GAIN } from '../src/lib/energy';
 import type { RotationHistoryFile, TeamRotationFile } from '../src/lib/team-types';
 
@@ -60,6 +62,32 @@ for (const team of rotation.teams) {
   }
 }
 
+/* ------------------------------------------------------------------ 阵容 ⇄ 培养 一致性门禁
+ *
+ * 用户在「阵容」看到的 4 招，必须和点进「培养」#/build/<id> 后 2×2 四格的 4 招完全相同（同序）。
+ * 两个板块现在共用 buildGuide(spirit, 'burst') 这一个函数，这里逐只再核一遍，
+ * 防止以后 48 小时轮换或培养引擎改动时再次分叉。 */
+let checked = 0;
+let mismatched = 0;
+console.log('\n—— 阵容 ⇄ 培养 一致性（buildGuide · 速攻爆发）——');
+for (const preset of rotation.teams) {
+  for (const member of preset.members) {
+    const spirit = spiritsById.get(member.spiritId);
+    if (!spirit) continue;
+    checked += 1;
+    const guideNames = buildGuide(spirit, 'burst').slots.map((slot) => slot.skill.name);
+    const names = member.skills.map((ref) => ref.name);
+    const same = guideNames.join('|') === names.join('|');
+    if (!same) mismatched += 1;
+    console.log(
+      `${same ? '✓' : '✗'} ${preset.name} · ${member.role} ${spirit.name}：${names.join(' / ')}` +
+        (same ? '（与培养页 4 格同序一致）' : `（培养页是 ${guideNames.join(' / ')}）`),
+    );
+  }
+}
+console.log(`一致性：${checked - mismatched}/${checked} 只完全相同`);
+if (mismatched) problems.push(`阵容与培养板块有 ${mismatched}/${checked} 只精灵的 4 招不一致`);
+
 for (const w of warnings) console.warn(`  ⚠ ${w}`);
 
 if (problems.length) {
@@ -67,4 +95,4 @@ if (problems.length) {
   for (const p of problems) console.error(`  - ${p}`);
   process.exit(1);
 }
-console.log('\n✓ 能量、特性、血脉、同 dex、定位、联动证据与覆盖口径全部通过');
+console.log('\n✓ 能量、特性、血脉、同 dex、定位、联动证据、覆盖口径与「阵容⇄培养」配招一致性全部通过');

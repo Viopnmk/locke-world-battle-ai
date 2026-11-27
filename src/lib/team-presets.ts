@@ -6,7 +6,8 @@
  * 这里只负责把 JSON 变成页面用的类型、解析技能，并给云端模型拼事实块。
  */
 import rotationData from '../data/team-rotation.json';
-import { skillsOf, spiritsById } from './spirits';
+import { resolveCarried } from './carried-skills';
+import { spiritsById } from './spirits';
 import type { ResolvedSkill, Spirit } from './types';
 import type {
   ChainStep,
@@ -56,9 +57,13 @@ export function presetSpirit(spiritId: string): Spirit | undefined {
   return spiritsById.get(spiritId);
 }
 
-/** 把阵容里写的技能名解析成这只精灵真正可学的技能记录；查不到返回 null（校验脚本会报错）。 */
+/**
+ * 把阵容里写的技能名解析成这只精灵实际能带的技能记录；查不到返回 null（校验脚本会报错）。
+ * 自带学习面优先，其次「改血脉」能换到的那个技能——培养板块推荐的就是这一类，
+ * 阵容必须按同一口径解析，否则两边对不上。
+ */
 export function resolveMemberSkill(spirit: Spirit, name: string): ResolvedSkill | null {
-  return skillsOf(spirit).find((s) => s.name === name) ?? null;
+  return resolveCarried(spirit, name);
 }
 
 export function memberSpirits(preset: TeamPreset): Spirit[] {
