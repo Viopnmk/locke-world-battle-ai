@@ -9,20 +9,6 @@ import type { Skill, Spirit } from '../lib/types';
 /** 默认展示参考截图里的那只：圣代甜甜（杨桃巧克力口味），编号 236 的形态之一。 */
 const DEFAULT_ID = 'pet_000364';
 
-/** 顶栏快捷位：全图鉴总种族值最高的 6 个形态（同名形态只取一个）。 */
-const FEATURED: Spirit[] = (() => {
-  const seen = new Set<string>();
-  const out: Spirit[] = [];
-  for (const s of [...spirits].sort((a, b) => (b.stats.total ?? 0) - (a.stats.total ?? 0))) {
-    const key = baseName(s.name);
-    if (seen.has(key)) continue;
-    seen.add(key);
-    out.push(s);
-    if (out.length >= 6) break;
-  }
-  return out;
-})();
-
 function CategoryGlyph({ category }: { category: string }) {
   const common = {
     viewBox: '0 0 24 24',
@@ -125,34 +111,31 @@ export function BuildPage({ spiritId, onPick }: Props) {
   const guide = useMemo(() => buildGuide(selected, preset), [selected, preset]);
   const learnable = useMemo(() => skillsOf(selected), [selected]);
 
-  const strip = useMemo(() => {
-    const rest = FEATURED.filter((s) => s.id !== selected.id);
-    return [selected, ...rest].slice(0, 7);
-  }, [selected]);
-
   const formTag = selected.formLabel || '';
 
   return (
     <div className="build">
-      <div className="build__strip" role="group" aria-label="快捷选择精灵">
-        {strip.map((s) => (
-          <button
-            key={s.id}
-            type="button"
-            className={`quick-tile${s.id === selected.id ? ' is-active' : ''}`}
-            onClick={() => onPick(s)}
-            aria-pressed={s.id === selected.id}
-            aria-label={s.name}
-          >
-            <img src={s.avatar} alt="" loading="lazy" decoding="async" />
-          </button>
-        ))}
-        <button type="button" className="quick-tile quick-tile--search" onClick={() => setPickerOpen(true)} aria-label="搜索全部精灵">
-          <svg viewBox="0 0 24 24" aria-hidden="true">
-            <circle cx="11" cy="11" r="7" />
-            <path d="m20 20-3.6-3.6" />
-          </svg>
-          <span>搜索</span>
+      <div className="build__bar">
+        <button type="button" className="build__search" onClick={() => setPickerOpen(true)} aria-label="搜索全部精灵">
+          <span className="build__search-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24">
+              <circle cx="11" cy="11" r="7" />
+              <path d="m20 20-3.6-3.6" />
+            </svg>
+          </span>
+          <span className="build__search-text">
+            <strong>搜索精灵</strong>
+            <small>全图鉴 {spirits.length} 种 · 点这里换精灵</small>
+          </span>
+        </button>
+        <button
+          type="button"
+          className="build__current"
+          onClick={() => setPickerOpen(true)}
+          aria-label={`当前精灵：${baseName(selected.name)}，点击切换`}
+          title={`当前：${selected.name}（点击切换）`}
+        >
+          <img src={selected.avatar} alt="" decoding="async" />
         </button>
       </div>
 

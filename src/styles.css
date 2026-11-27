@@ -2189,72 +2189,103 @@ a {
   min-width: 0;
 }
 
-.build__strip {
+.build__bar {
   display: flex;
+  align-items: stretch;
   gap: 8px;
-  overflow-x: auto;
-  padding: 2px 0 4px;
-  scrollbar-width: none;
-  -webkit-overflow-scrolling: touch;
+  min-width: 0;
 }
 
-.build__strip::-webkit-scrollbar {
-  display: none;
-}
-
-.quick-tile {
-  flex: none;
-  width: 58px;
-  height: 58px;
-  min-width: 58px;
-  padding: 4px;
+/* 搜索放最前，一眼可点，占满整行主宽，窄屏也不横向滚动 */
+.build__search {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 62px;
+  padding: 8px 12px;
   border-radius: 16px;
   border: 1px solid var(--line);
-  background: var(--card);
+  background: linear-gradient(180deg, #fdf8ec, #f7efdc);
+  box-shadow: 0 2px 8px rgba(184, 137, 43, 0.08);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  text-align: left;
+  color: var(--ink);
+  transition: transform 0.12s ease, border-color 0.12s ease;
+}
+
+.build__search:active {
+  transform: scale(0.985);
+  border-color: #e0c48a;
+}
+
+.build__search-icon {
+  flex: none;
+  width: 34px;
+  height: 34px;
+  border-radius: 999px;
+  background: #f2e7cb;
+  display: grid;
+  place-items: center;
+  color: var(--accent-deep);
+}
+
+.build__search-icon svg {
+  width: 19px;
+  height: 19px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+}
+
+.build__search-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.build__search-text strong {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.build__search-text small {
+  font-size: 10.5px;
+  line-height: 1.25;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 右侧只保留当前这一只精灵头像 */
+.build__current {
+  flex: none;
+  width: 62px;
+  min-width: 62px;
+  height: 62px;
+  padding: 4px;
+  border-radius: 16px;
+  border: 1px solid #e0c48a;
+  background: #fdf1d9;
+  box-shadow: 0 2px 8px rgba(184, 137, 43, 0.18);
   display: grid;
   place-items: center;
   overflow: hidden;
-  transition: transform 0.12s ease, border-color 0.12s ease, background 0.12s ease;
+  transition: transform 0.12s ease;
 }
 
-.quick-tile img {
+.build__current img {
   width: 100%;
   height: 100%;
   object-fit: contain;
 }
 
-.quick-tile.is-active {
-  border-color: #e0c48a;
-  background: #fdf1d9;
-  box-shadow: 0 2px 8px rgba(184, 137, 43, 0.18);
-}
-
-.quick-tile:active {
+.build__current:active {
   transform: scale(0.96);
-}
-
-.quick-tile--search {
-  gap: 2px;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  color: var(--accent-deep);
-  background: #fbf6e9;
-  border-style: dashed;
-}
-
-.quick-tile--search svg {
-  width: 20px;
-  height: 20px;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 1.7;
-  stroke-linecap: round;
-}
-
-.quick-tile--search span {
-  font-size: 9.5px;
 }
 
 .build-card {
