@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { SpiritList } from './components/SpiritList';
 import { SpiritDetail } from './components/SpiritDetail';
 import { TypeCalculator } from './components/TypeCalculator';
@@ -76,27 +76,42 @@ const TABS: { key: Tab; label: string; icon: JSX.Element }[] = [
   },
 ];
 
+interface Route {
+  tab: Tab;
+  spiritId: string | null;
+  buildId: string | null;
+  /** 培养页的选宠器也是历史栈里的一层：#/build/pick · #/build/<id>/pick */
+  buildPick: boolean;
+}
+
 /**
  * Hash routes so any view can be opened directly and shared on a phone:
- * #/ (图鉴) · #/chart (克制) · #/build[/<id>] (培养方案) · #/ai (AI) · #/spirit/<id> (图鉴详情)
+ * #/ (图鉴) · #/chart (克制) · #/build[/<id>] (培养方案) · #/build[/<id>]/pick (选宠器) · #/ai (AI) · #/spirit/<id> (图鉴详情)
  */
-function readHash(): { tab: Tab; spiritId: string | null; buildId: string | null } {
+function readHash(): Route {
   const raw = window.location.hash.replace(/^#\/?/, '');
-  if (raw.startsWith('spirit/')) return { tab: 'dex', spiritId: raw.slice('spirit/'.length), buildId: null };
-  if (raw.startsWith('build')) {
-    const id = raw.slice('build'.length).replace(/^\//, '');
-    return { tab: 'build', spiritId: null, buildId: id || null };
+  if (raw.startsWith('spirit/')) return { tab: 'dex', spiritId: raw.slice('spirit/'.length), buildId: null, buildPick: false };
+  if (raw === 'build' || raw.startsWith('build/')) {
+    const segs = raw.slice('build'.length).split('/').filter(Boolean);
+    const buildPick = segs[segs.length - 1] === 'pick';
+    const buildId = segs.find((s) => s !== 'pick') ?? null;
+    return { tab: 'build', spiritId: null, buildId, buildPick };
   }
-  if (raw === 'chart') return { tab: 'chart', spiritId: null, buildId: null };
-  if (raw === 'teams') return { tab: 'teams', spiritId: null, buildId: null };
-  if (raw === 'ai') return { tab: 'ai', spiritId: null, buildId: null };
-  return { tab: 'dex', spiritId: null, buildId: null };
+  if (raw === 'chart') return { tab: 'chart', spiritId: null, buildId: null, buildPick: false };
+  if (raw === 'teams') return { tab: 'teams', spiritId: null, buildId: null, buildPick: false };
+  if (raw === 'ai') return { tab: 'ai', spiritId: null, buildId: null, buildPick: false };
+  return { tab: 'dex', spiritId: null, buildId: null, buildPick: false };
 }
+
+const routeKey = (r: Route) => `${r.tab}|${r.spiritId ?? ''}|${r.buildId ?? ''}`;
 
 export default function App() {
   const initial = readHash();
   const [tab, setTab] = useState<Tab>(initial.tab);
   const [buildId, setBuildId] = useState<string | null>(initial.buildId);
+  const [buildPick, setBuildPick] = useState(initial.buildPick);
+  /** 只有真正换页（换板块 / 换精灵）才回顶；仅开/关选宠器时不动滚动位置，避免 iOS 返回时画面抽动。 */
+  const routeKeyRef = useRef(routeKey(initial));
   const [aiSeed, setAiSeed] = useState<AiSeed | null>(null);
   const [query, setQuery] = useState('');
   const [typeFilter, setTypeFilter] = useState<string | null>(null);
@@ -112,8 +127,13 @@ export default function App() {
       const r = readHash();
       setTab(r.tab);
       setBuildId(r.buildId);
+      setBuildPick(r.buildPick);
       setSelected(r.spiritId ? spirits.find((s) => s.id === r.spiritId) ?? null : null);
-      window.scrollTo({ top: 0 });
+      const key = routeKey(r);
+      if (key !== routeKeyRef.current) {
+        routeKeyRef.current = key;
+        window.scrollTo({ top: 0 });
+      }
     };
     window.addEventListener('hashchange', onHash);
     return () => window.removeEventListener('hashchange', onHash);
@@ -126,6 +146,7 @@ export default function App() {
 
   const openSpirit = useCallback((spirit: Spirit) => {
     setSelected(spirit);
+    setBuildPick(false);
     go(`#/spirit/${spirit.id}`);
   }, [go]);
 
@@ -140,14 +161,29 @@ export default function App() {
       setSelected(null);
       setTab('build');
       setBuildId(spirit.id);
+      setBuildPick(false);
       go(`#/build/${spirit.id}`);
     },
     [go],
   );
 
+  /** 选宠器也是一条独立历史：从 #/build/<id> push 出 #/build/<id>/pick，左滑返回才回得到搜索界面。 */
+  const openBuildPick = useCallback(() => {
+    setTab('build');
+    setBuildPick(true);
+    go(`#/build${buildId ? `/${buildId}` : ''}/pick`);
+  }, [buildId, go]);
+
+  /** 关闭选宠器：直接回到培养页，不依赖 history.back()（直接打开 /pick 分享链接时也能正常退出）。 */
+  const closeBuildPick = useCallback(() => {
+    setBuildPick(false);
+    go(`#/build${buildId ? `/${buildId}` : ''}`);
+  }, [buildId, go]);
+
   const pickBuildSpirit = useCallback(
     (spirit: Spirit) => {
       setBuildId(spirit.id);
+      setBuildPick(false);
       go(`#/build/${spirit.id}`);
     },
     [go],
@@ -181,6 +217,7 @@ export default function App() {
       });
       setSelected(null);
       setTab('ai');
+      setBuildPick(false);
       go('#/ai');
     },
     [go],
@@ -192,6 +229,7 @@ export default function App() {
       setSelected(null);
       setTab('build');
       setBuildId(spirit.id);
+      setBuildPick(false);
       go(`#/build/${spirit.id}`);
     },
     [go],
@@ -210,6 +248,7 @@ export default function App() {
               : '#/';
     if (next === 'dex') setSelected(null);
     setTab(next);
+    setBuildPick(false);
     go(hash);
   }
 
@@ -308,7 +347,15 @@ export default function App() {
           </>
         ) : null}
 
-        {tab === 'build' ? <BuildPage spiritId={buildId} onPick={pickBuildSpirit} /> : null}
+        {tab === 'build' ? (
+          <BuildPage
+            spiritId={buildId}
+            pickOpen={buildPick}
+            onOpenPick={openBuildPick}
+            onClosePick={closeBuildPick}
+            onPick={pickBuildSpirit}
+          />
+        ) : null}
         {tab === 'chart' ? <TypeCalculator onOpenType={openType} /> : null}
         {tab === 'teams' ? <TeamsPage onOpenBuild={openBuildFromTeams} onImport={importTeam} /> : null}
         {tab === 'ai' ? <AiPanel seed={aiSeed} /> : null}

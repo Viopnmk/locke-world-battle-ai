@@ -100,12 +100,22 @@ function SkillSlot({ slot }: { slot: BuildSlot }) {
 
 interface Props {
   spiritId: string | null;
+  /** 选宠器开关由 URL 历史驱动（#/build[/<id>]/pick），左滑返回能回到搜索界面。 */
+  pickOpen: boolean;
+  onOpenPick: () => void;
+  onClosePick: () => void;
   onPick: (spirit: Spirit) => void;
 }
 
-export function BuildPage({ spiritId, onPick }: Props) {
+export function BuildPage({ spiritId, pickOpen, onOpenPick, onClosePick, onPick }: Props) {
   const [preset, setPreset] = useState<PresetKey>('burst');
-  const [pickerOpen, setPickerOpen] = useState(false);
+  /** 只有用户主动点开选宠器才重置搜索词；历史回退回到 #/build/.../pick 时保留原来的搜索结果。 */
+  const [pickNonce, setPickNonce] = useState(0);
+
+  const openPick = () => {
+    setPickNonce((n) => n + 1);
+    onOpenPick();
+  };
 
   const selected = (spiritId ? spiritsById.get(spiritId) : undefined) ?? spiritsById.get(DEFAULT_ID) ?? spirits[0];
   const guide = useMemo(() => buildGuide(selected, preset), [selected, preset]);
@@ -116,7 +126,7 @@ export function BuildPage({ spiritId, onPick }: Props) {
   return (
     <div className="build">
       <div className="build__bar">
-        <button type="button" className="build__search" onClick={() => setPickerOpen(true)} aria-label="搜索全部精灵">
+        <button type="button" className="build__search" onClick={openPick} aria-label="搜索全部精灵">
           <span className="build__search-icon" aria-hidden="true">
             <svg viewBox="0 0 24 24">
               <circle cx="11" cy="11" r="7" />
@@ -131,7 +141,7 @@ export function BuildPage({ spiritId, onPick }: Props) {
         <button
           type="button"
           className="build__current"
-          onClick={() => setPickerOpen(true)}
+          onClick={openPick}
           aria-label={`当前精灵：${baseName(selected.name)}，点击切换`}
           title={`当前：${selected.name}（点击切换）`}
         >
@@ -315,14 +325,12 @@ export function BuildPage({ spiritId, onPick }: Props) {
       </section>
 
       <SpiritPicker
-        open={pickerOpen}
+        open={pickOpen}
         title="选择精灵"
         excludeIds={[]}
-        onPick={(s) => {
-          setPickerOpen(false);
-          onPick(s);
-        }}
-        onClose={() => setPickerOpen(false)}
+        freshKey={pickNonce}
+        onPick={onPick}
+        onClose={onClosePick}
       />
     </div>
   );

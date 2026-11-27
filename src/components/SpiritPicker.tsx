@@ -9,21 +9,29 @@ interface Props {
   excludeIds: string[];
   onPick: (spirit: Spirit) => void;
   onClose: () => void;
+  /** 每次用户主动打开选宠器时递增：清空搜索词并回到列表顶部。历史回退重新打开时不变，保留上次搜索结果。 */
+  freshKey?: number;
 }
 
 const PAGE = 40;
 
+/** 触屏设备（iPhone/iPad）不自动聚焦搜索框：软键盘弹出会把画面顶起，左滑返回时也会抽动。 */
+function isTouchDevice() {
+  if (typeof window === 'undefined') return false;
+  const coarse = window.matchMedia?.('(pointer: coarse)')?.matches ?? false;
+  return coarse || (navigator.maxTouchPoints ?? 0) > 0;
+}
+
 /** 全屏挑选器：搜索 662 只图鉴 + 高种族值快捷选择。 */
-export function SpiritPicker({ open, title, excludeIds, onPick, onClose }: Props) {
+export function SpiritPicker({ open, title, excludeIds, onPick, onClose, freshKey = 0 }: Props) {
   const [query, setQuery] = useState('');
   const [limit, setLimit] = useState(PAGE);
+  const [autoFocus] = useState(() => !isTouchDevice());
 
   useEffect(() => {
-    if (open) {
-      setQuery('');
-      setLimit(PAGE);
-    }
-  }, [open]);
+    setQuery('');
+    setLimit(PAGE);
+  }, [freshKey]);
 
   useEffect(() => {
     if (!open) return undefined;
@@ -79,7 +87,7 @@ export function SpiritPicker({ open, title, excludeIds, onPick, onClose }: Props
             placeholder="搜索名称 / 编号，如 迪莫、001"
             enterKeyHint="search"
             aria-label="搜索精灵"
-            autoFocus
+            autoFocus={autoFocus}
           />
           {query ? (
             <button type="button" className="search-bar__clear" onClick={() => setQuery('')} aria-label="清空搜索">
