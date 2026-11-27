@@ -329,6 +329,7 @@ export function BuildPage({ spiritId, pickOpen, onOpenPick, onClosePick, onPick 
         title="选择精灵"
         excludeIds={[]}
         freshKey={pickNonce}
+        memoKey="build-pick"
         onPick={onPick}
         onClose={onClosePick}
       />
