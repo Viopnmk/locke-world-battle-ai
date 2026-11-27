@@ -61,40 +61,52 @@ function isDamaging(skill: Skill) {
   return typeof skill.power === 'number' && skill.power > 0;
 }
 
-function SkillSlot({ slot }: { slot: BuildSlot }) {
+const SLOT_ACCENT: Record<string, string> = {
+  primary: '#b8892b',
+  counter: '#b8332f',
+  second: '#2f6d9e',
+  support: '#63497f',
+  fill: '#8a9089',
+};
+
+function SkillCard({ slot, bloodName }: { slot: BuildSlot; bloodName: string | null }) {
   const skill = slot.skill;
+  const color = typeColor(skill.type);
+  const sourceText = slot.source === '血脉' ? `${bloodName ?? ''}血脉` : slot.source;
+  const damaging = isDamaging(skill);
   return (
-    <div className="bslot" title={skill.effect || skill.name}>
-      <span className={`bslot__source bslot__source--l${slot.source === '升级' ? 0 : slot.source === '技能石' ? 1 : 2}`}>
-        {slot.source}
-      </span>
-      <div className="bslot__body">
-        <span className="bslot__icon" style={{ background: tint(typeColor(skill.type), 0.12) }}>
+    <article
+      className={`bskill bskill--${slot.kind}`}
+      style={{ borderLeftColor: SLOT_ACCENT[slot.kind] ?? SLOT_ACCENT.fill }}
+    >
+      <header className="bskill__head">
+        <span className="bskill__type" style={{ background: tint(color, 0.16), color }}>
+          <TypeGlyph type={skill.type} size={13} />
+          {skill.type}
+        </span>
+        <h4 className="bskill__name">{skill.name}</h4>
+        <span className={`bskill__source bskill__source--l${slot.source === '升级' ? 0 : slot.source === '技能石' ? 1 : 2}`}>
+          {sourceText}
+        </span>
+        <span className="bskill__icon" style={{ background: tint(color, 0.1) }}>
           {skill.icon ? (
             <img src={skill.icon} alt="" loading="lazy" decoding="async" />
           ) : (
             <CategoryGlyph category={skill.category} />
           )}
         </span>
-        <span className="bslot__stats">
-          <span className="bslot__stat bslot__stat--energy">
-            <span aria-hidden="true">★</span> {skill.energy ?? '—'}
-          </span>
-          <span
-            className="bslot__stat"
-            aria-label={isDamaging(skill) ? `威力 ${skill.power}` : '状态技能'}
-          >
-            <CategoryGlyph category={skill.category} />
-            {isDamaging(skill) ? skill.power : '状态'}
-          </span>
+      </header>
+      <p className="bskill__meta">
+        <span>
+          {damaging ? `${skill.category} · 威力 ${skill.power} · 能耗 ` : '变化 · 状态/辅助 · 能耗 '}
+          <b className="bskill__energy">★{skill.energy ?? '—'}</b>
         </span>
-      </div>
-      <span className="bslot__name">
-        <TypeGlyph type={skill.type} />
-        <span>{skill.name}</span>
-      </span>
-      <span className="bslot__slot">{slot.slot}</span>
-    </div>
+        <span className="bskill__role" style={{ color: SLOT_ACCENT[slot.kind] ?? SLOT_ACCENT.fill }}>
+          {slot.slot}
+        </span>
+      </p>
+      <p className="bskill__reason">{slot.reason}</p>
+    </article>
   );
 }
 
@@ -151,10 +163,13 @@ export function BuildPage({ spiritId, pickOpen, onOpenPick, onClosePick, onPick 
 
       <article className="build-card">
         <div className="build-card__head">
-          <div className="build-card__who">
-            {formTag ? <span className="build-card__form">{formTag}</span> : null}
-            <img className="build-card__avatar" src={selected.avatar} alt={`${selected.name} 头像`} decoding="async" />
-            <span className="build-card__name">{baseName(selected.name)}</span>
+          <img className="build-card__avatar" src={selected.avatar} alt={`${selected.name} 头像`} decoding="async" />
+          <div className="build-card__info">
+            <div className="build-card__titles">
+              {formTag ? <span className="build-card__form">{formTag}</span> : null}
+              <span className="build-card__name">{baseName(selected.name)}</span>
+              <span className="build-card__dex">No.{selected.dex}</span>
+            </div>
             <span className="build-card__types">
               {selected.type.map((t) => (
                 <span key={t} className="type-chip type-chip--sm" style={{ background: tint(typeColor(t), 0.16), color: typeColor(t) }}>
@@ -167,13 +182,44 @@ export function BuildPage({ spiritId, pickOpen, onOpenPick, onClosePick, onPick 
               {guide.roleLabel} · {guide.presetLabel}
             </span>
           </div>
+        </div>
 
-          <div className="build-card__skills">
+        <section className="build-skills">
+          <h3 className="build-skills__title">
+            <span aria-hidden="true">🎒</span> 携带技能推荐 <em>({guide.slots.length})</em>
+          </h3>
+          <p className="build-skills__weak">
+            {guide.weaknesses.length ? (
+              <>
+                防御弱点
+                {guide.weaknesses.map((w) => (
+                  <span key={w.type} className="weak-chip" style={{ color: typeColor(w.type), borderColor: tint(typeColor(w.type), 0.35) }}>
+                    <TypeGlyph type={w.type} size={11} />
+                    {w.type} ×{w.multiplier}
+                  </span>
+                ))}
+              </>
+            ) : (
+              '克制表里没有 ×2 弱点'
+            )}
+          </p>
+          <p className="build-skills__counter">
+            {guide.counter.locked
+              ? `反克制位：${guide.counter.locked.type}系 ×2 克制 ${guide.counter.locked.covered.join('、')}（第 ${guide.counter.locked.slotIndex} 格${guide.counter.locked.fromBlood ? ' · 血脉' : ''}）`
+              : guide.counter.hasWeakness
+                ? '反克制位：可学池无 ×2 反克招，改成补盲'
+                : '反克制位：没有弱点，不设'}
+          </p>
+          <div className="bskill-list">
             {guide.slots.map((slot) => (
-              <SkillSlot key={slot.skill.id} slot={slot} />
+              <SkillCard
+                key={slot.skill.id}
+                slot={slot}
+                bloodName={guide.bloodline.main.equipped ? guide.bloodline.main.blood : null}
+              />
             ))}
           </div>
-        </div>
+        </section>
 
         <section className="build-row">
           <h3 className="build-row__title">
@@ -317,9 +363,10 @@ export function BuildPage({ spiritId, pickOpen, onOpenPick, onClosePick, onPick 
       <section className="panel panel--quiet build__note">
         <h2 className="panel__title">这套方案是怎么来的</h2>
         <ul>
-          <li>技能：按本系主攻 → 换属性副攻 → 补盲 → 变化排序，只用它自己学习面里的技能，评分 = 威力（含能耗修正）× 本系 × 类别 × 属性克制收益 × 特性协同。</li>
+          <li>技能：先算这只精灵的防御弱点（克制表里能打它 ≥2 倍的属性），四格按「本系主攻 → 反克制（×2 打穿克制自己的属性，优先异属性）→ 第二本系/补盲 → 辅助」排序；被已经在场的招完全压制的技能（又贵又弱）不进推荐。</li>
+          <li>反克制：只认 BWIKI 克制表真实倍率，可学池（升级 / 技能石 / 19 个血脉候选）里没有 ×2 反克招时，就诚实改成补盲并在说明里写清楚，不编一个克制关系。</li>
           <li>性格：只改两项，+10% 给主输出或速度/生命，-10% 给用不上的那项；个体值只点 3 项，不摊薄。</li>
-          <li>血脉：一只精灵只有一个血脉，18 系别血脉 + 普通血脉的 19 个血脉技能只能选 1 个；全库先按同一条规则择优保留 1 个，其余血脉技能直接不进候选池，四个技能位里不会再出现第二个血脉技能。</li>
+          <li>血脉：一只精灵只有一个血脉，18 系别血脉 + 普通血脉的 19 个血脉技能只能选 1 个；全库先按同一条规则择优保留 1 个，其余血脉技能直接不进候选池。常规学习面反制不了弱点时，这唯一名额优先给能反制的血脉技。</li>
           <li>数据：BWIKI「精灵列表」「性格」「技能」「血脉技能」模块，抓取于 {meta.fetchedAt.slice(0, 10)}，与图鉴页同一套 JSON。</li>
         </ul>
       </section>

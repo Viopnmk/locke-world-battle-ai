@@ -2298,24 +2298,42 @@ a {
 }
 
 .build-card__head {
-  display: grid;
-  grid-template-columns: minmax(0, 110px) minmax(0, 1fr);
-  gap: 9px;
-  align-items: start;
+  display: flex;
+  align-items: flex-start;
+  gap: 11px;
+  min-width: 0;
 }
 
-.build-card__who {
+.build-card__avatar {
+  flex: none;
+  width: 84px;
+  height: 84px;
+  object-fit: contain;
+  border-radius: 16px;
+  border: 1px solid #eee4cf;
+  background: radial-gradient(circle at 50% 35%, #fdf6e6, #f2ead8);
+}
+
+.build-card__info {
   display: flex;
   flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  padding-top: 2px;
+}
+
+.build-card__titles {
+  display: flex;
   align-items: center;
   gap: 6px;
+  flex-wrap: wrap;
   min-width: 0;
 }
 
 .build-card__form {
   max-width: 100%;
-  font-size: 11px;
-  padding: 3px 9px;
+  font-size: 10.5px;
+  padding: 2px 8px;
   border-radius: 8px;
   background: #f7d774;
   color: #4a3a12;
@@ -2325,18 +2343,9 @@ a {
   text-overflow: ellipsis;
 }
 
-.build-card__avatar {
-  width: 100%;
-  max-width: 106px;
-  aspect-ratio: 1;
-  object-fit: contain;
-  border-radius: 16px;
-  background: radial-gradient(circle at 50% 35%, #fdf6e6, #f2ead8);
-}
-
 .build-card__name {
   max-width: 100%;
-  padding: 5px 13px;
+  padding: 4px 12px;
   border-radius: 999px;
   background: #2c2c2c;
   color: #fff;
@@ -2347,11 +2356,16 @@ a {
   text-overflow: ellipsis;
 }
 
+.build-card__dex {
+  font-size: 10.5px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
 .build-card__types {
   display: flex;
   gap: 4px;
   flex-wrap: wrap;
-  justify-content: center;
 }
 
 .build-card__types .type-chip {
@@ -2363,65 +2377,140 @@ a {
 .build-card__role {
   font-size: 10.5px;
   color: var(--muted);
-  text-align: center;
   line-height: 1.4;
 }
 
-.build-card__skills {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px;
+/* ---------------------------------------------------------------- 携带技能推荐 */
+
+.build-skills {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px dashed var(--line);
   min-width: 0;
 }
 
-.bslot {
-  position: relative;
+.build-skills__title {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin: 0 0 7px;
+  font-size: 15px;
+  letter-spacing: -0.2px;
+}
+
+.build-skills__title em {
+  font-style: normal;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent-deep);
+}
+
+.build-skills__weak,
+.build-skills__counter {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin: 0 0 6px;
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--muted);
+}
+
+.build-skills__counter {
+  margin-bottom: 9px;
+  color: #7a6a4c;
+}
+
+.weak-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 0 6px 0 3px;
+  border-radius: 999px;
+  border: 1px solid currentColor;
+  background: #fffdf8;
+  font-size: 10.5px;
+  font-weight: 600;
+  line-height: 1.7;
+}
+
+.bskill-list {
   display: flex;
   flex-direction: column;
-  gap: 5px;
-  padding: 15px 6px 6px;
-  border-radius: 14px;
-  border: 1px solid #efe8d8;
-  background: #fbf8f1;
+  gap: 9px;
   min-width: 0;
 }
 
-.bslot__source {
-  position: absolute;
-  top: 3px;
-  left: 4px;
-  font-size: 9px;
-  line-height: 1.4;
-  padding: 0 5px;
-  border-radius: 6px;
-  background: #2f3a35;
-  color: #fff;
+.bskill {
+  min-width: 0;
+  padding: 9px 11px 10px;
+  border: 1px solid #eee5d3;
+  border-left: 3px solid var(--accent);
+  border-radius: 14px;
+  background: linear-gradient(180deg, #fffdf8, #fbf7ef);
+  box-shadow: 0 1px 3px rgba(72, 63, 44, 0.05);
+  overflow-wrap: anywhere;
 }
 
-.bslot__source--l1 {
-  background: #2f3a35;
-}
-
-.bslot__source--l2 {
-  background: #7b5a9c;
-}
-
-.bslot__slot {
-  position: absolute;
-  top: 4px;
-  right: 5px;
-  font-size: 9px;
-  color: #a3a598;
-}
-
-.bslot__body {
+.bskill__head {
   display: flex;
   align-items: center;
   gap: 6px;
   min-width: 0;
 }
 
-.bslot__icon {
+.bskill__type {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 1px 7px 1px 3px;
+  border-radius: 999px;
+  font-size: 10.5px;
+  font-weight: 600;
+  line-height: 1.6;
+}
+
+.bskill__type .type-glyph {
+  width: 12px;
+  height: 12px;
+}
+
+.bskill__name {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.bskill__source {
+  flex: none;
+  padding: 1px 7px;
+  border-radius: 7px;
+  background: #f1ede1;
+  color: #6b6a5f;
+  font-size: 10px;
+  line-height: 1.6;
+  white-space: nowrap;
+}
+
+.bskill__source--l1 {
+  background: #e9eff4;
+  color: #40627a;
+}
+
+.bskill__source--l2 {
+  background: #fbe9e2;
+  color: #a9482a;
+}
+
+.bskill__icon {
   flex: none;
   width: 34px;
   height: 34px;
@@ -2432,64 +2521,46 @@ a {
   color: #6d746c;
 }
 
-.bslot__icon img {
+.bskill__icon img {
   width: 100%;
   height: 100%;
   object-fit: contain;
 }
 
-.bslot__stats {
+.bskill__meta {
   display: flex;
-  flex-direction: column;
-  gap: 4px;
-  min-width: 0;
-}
-
-.bslot__stat {
-  display: inline-flex;
   align-items: center;
-  gap: 2px;
-  max-width: 100%;
-  font-size: 9.5px;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 7px 0 0;
+  font-size: 12px;
   line-height: 1.5;
   color: #5d635c;
-  background: #fff;
-  border: 1px solid #eee7d7;
-  border-radius: 999px;
-  padding: 0 5px;
-  white-space: nowrap;
-  overflow: hidden;
+  font-variant-numeric: tabular-nums;
 }
 
-.bslot__stat--energy {
-  color: #2f3a35;
+.bskill__energy {
+  color: var(--ink);
   font-weight: 600;
 }
 
-.bslot__name {
-  display: flex;
-  align-items: center;
-  gap: 2px;
-  min-width: 0;
-  padding: 3px 5px;
+.bskill__role {
+  flex: none;
+  padding: 1px 8px;
   border-radius: 999px;
-  background: #f1ede1;
-  font-size: 11px;
+  background: #f4f0e5;
+  font-size: 10.5px;
   font-weight: 600;
-  letter-spacing: -0.1px;
 }
 
-.bslot__name .type-glyph {
-  width: 12px;
-  height: 12px;
+.bskill__reason {
+  margin: 6px 0 0;
+  font-size: 13px;
+  line-height: 1.62;
+  color: #454b46;
+  overflow-wrap: anywhere;
 }
 
-.bslot__name span {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
 
 .cat-glyph {
   width: 11px;
