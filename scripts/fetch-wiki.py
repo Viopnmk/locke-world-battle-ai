@@ -88,9 +88,11 @@ def http_get(url: str, *, cache_name: str, offline: bool, retries: int = 3) -> s
     """GET with an on-disk cache. Returns decoded text."""
     os.makedirs(CACHE, exist_ok=True)
     path = _cache_path(cache_name)
-    if offline or os.path.exists(path):
+    if offline and os.path.exists(path):
         with open(path, encoding="utf-8") as f:
             return f.read()
+    if offline:
+        raise SystemExit(f"offline cache missing: {path}")
     last = None
     for attempt in range(retries):
         try:
