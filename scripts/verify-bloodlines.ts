@@ -21,7 +21,6 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { bloodlineTable, BLOODLINE_SKILL_LIMIT, buildGuide } from '../src/lib/build-guide';
 import type { PresetKey } from '../src/lib/build-guide';
-import { resolveCarried } from '../src/lib/carried-skills';
 import { skillById, skillsOf, spirits } from '../src/lib/spirits';
 
 const PRESETS: PresetKey[] = ['burst', 'bulk'];
@@ -158,12 +157,12 @@ for (const team of rotation.teams) {
       continue;
     }
     const idx = learnIndex(member.spiritId);
+    const own = skillsOf(spirit);
+    const byName = new Map(own.map((s) => [s.name, s]));
     let blood = 0;
     for (const ref of member.skills) {
       memberSkills += 1;
-      /* 口径与培养板块一致：自带学习面 + 改血脉能换到的那个技能，都算「实际能带」；
-         血脉技能数仍按 learn===2 计，硬门禁 ≤ BLOODLINE_SKILL_LIMIT。 */
-      const hit = resolveCarried(spirit, ref.name);
+      const hit = byName.get(ref.name);
       if (!hit) {
         problems.push(`[${team.id}] ${spirit.name}: 「${ref.name}」不可学`);
         continue;

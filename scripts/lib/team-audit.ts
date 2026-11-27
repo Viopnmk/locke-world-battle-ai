@@ -10,8 +10,6 @@
  *   同 dex / 定位冲突、假联动（因果对不上原文）、覆盖口径（推荐 4 招 vs 学习面）。
  */
 import { matchup, TYPE_ORDER } from '../../src/lib/typeChart';
-import { carriedSkills, resolveCarried } from '../../src/lib/carried-skills';
-import { buildGuide } from '../../src/lib/build-guide';
 import { skillsOf, spirits, spiritsById } from '../../src/lib/spirits';
 import { ENERGY_CAP, memberEnergy, entryEnergy, energyViolations, traitEnergyFacts } from '../../src/lib/energy';
 import { teamConflicts, traitActivation } from '../../src/lib/trait-rules';
@@ -54,7 +52,6 @@ const FAKE_CAUSE = [
 ];
 
 const learnCache = new Map<string, ResolvedSkill[]>();
-/** 自带学习面（升级 / 技能石 / 本族血脉记录）——「学习面覆盖」这个口径用它，不含改血脉。 */
 export function learnable(id: string): ResolvedSkill[] {
   let list = learnCache.get(id);
   if (!list) {
@@ -63,24 +60,6 @@ export function learnable(id: string): ResolvedSkill[] {
     learnCache.set(id, list);
   }
   return list;
-}
-
-/** 这只精灵实际能带上场的技能（自带 + 改血脉能换到的 19 选 1），用来核对阵容里的 4 招。 */
-const carriedCache = new Map<string, ResolvedSkill[]>();
-export function carried(id: string): ResolvedSkill[] {
-  let list = carriedCache.get(id);
-  if (!list) {
-    const sp = spiritsById.get(id);
-    list = sp ? carriedSkills(sp) : [];
-    carriedCache.set(id, list);
-  }
-  return list;
-}
-
-/** 阵容里这 4 招解析成真实技能记录（自带优先，其次改血脉）；解析不到返回 null。 */
-export function resolveMemberSkill(id: string, name: string): ResolvedSkill | null {
-  const sp = spiritsById.get(id);
-  return sp ? resolveCarried(sp, name) : null;
 }
 
 function threatens(spirit: Spirit): boolean {
@@ -169,7 +148,7 @@ export function auditRotation(rotation: TeamRotationFile, history: RotationHisto
 
     const chosenSets = preset.members.map((m) => ({
       spirit: spiritsById.get(m.spiritId),
-      chosen: m.skills.map((ref) => resolveMemberSkill(m.spiritId, ref.name)).filter((s): s is ResolvedSkill => Boolean(s)),
+      chosen: m.skills.map((ref) => learnable(m.spiritId).find((sk) => sk.name === ref.name)).filter((s): s is ResolvedSkill => Boolean(s)),
     }));
 
     let entryTotal = 0;
@@ -184,8 +163,7 @@ export function auditRotation(rotation: TeamRotationFile, history: RotationHisto
         continue;
       }
       if (!threatens(spirit)) problems.push(`${label}/${spirit.name}: 学习面里没有任何输出技能`);
-      /* 4 招的合法口径 = 自带学习面 + 改血脉能换到的技能（培养板块推荐的就是这一类） */
-      const own = carried(member.spiritId);
+      const own = learnable(member.spiritId);
       const ownNames = new Set(own.map((s) => s.name));
       if (!member.note || !member.duty || !member.traitSynergy) {
         problems.push(`${label}/${spirit.name}: note / duty / traitSynergy 有空值`);
@@ -199,7 +177,7 @@ export function auditRotation(rotation: TeamRotationFile, history: RotationHisto
       for (const ref of member.skills) {
         stat.skills += 1;
         if (!ownNames.has(ref.name)) {
-          problems.push(`${label}/${spirit.name}: 「${ref.name}」既不在学习面里，也不是改血脉能换到的技能`);
+          problems.push(`${label}/${spirit.name}: 「${ref.name}」不在学习面里`);
           continue;
         }
         const sk = own.find((s) => s.name === ref.name)!;
@@ -218,17 +196,6 @@ export function auditRotation(rotation: TeamRotationFile, history: RotationHisto
       const bloodCount = chosen.filter((sk) => sk.learn === 2).length;
       if (bloodCount > BLOODLINE_SKILL_LIMIT) {
         problems.push(`${label}/${spirit.name}: 带了 ${bloodCount} 个血脉技能，超过上限 ${BLOODLINE_SKILL_LIMIT}`);
-      }
-      /* 配招一致性（2026-11-27 新增门禁）：阵容的 4 招必须与培养板块 buildGuide(spirit,'burst') 完全相同、同序。
-         以前阵容引擎自己选招，用户在「阵容」看到 4 招、点进「培养」却是另外 4 招；
-         现在两条路径共用一个函数，这条门禁防止以后 48 小时轮换时再次分叉。 */
-      const guide = buildGuide(spirit, 'burst');
-      const guideNames = guide.slots.map((slot) => slot.skill.name);
-      const declaredNames = member.skills.map((ref) => ref.name);
-      if (guideNames.join('|') !== declaredNames.join('|')) {
-        problems.push(
-          `${label}/${spirit.name}: 4 招与培养板块不一致（阵容 ${declaredNames.join('、') || '空'} ／ 培养 ${guideNames.join('、') || '空'}）`,
-        );
       }
       if (!chosen.some((sk) => (sk.power ?? 0) > 0)) problems.push(`${label}/${spirit.name}: 4 招里没有输出技能`);
 
@@ -293,7 +260,7 @@ export function auditRotation(rotation: TeamRotationFile, history: RotationHisto
     for (const member of preset.members) {
       const spirit = spiritsById.get(member.spiritId);
       if (!spirit) continue;
-      const ch = member.skills.map((ref) => resolveMemberSkill(member.spiritId, ref.name)).filter((s): s is ResolvedSkill => Boolean(s));
+      const ch = member.skills.map((ref) => learnable(member.spiritId).find((sk) => sk.name === ref.name)).filter((s): s is ResolvedSkill => Boolean(s));
       for (const t of coverageOf(spirit, ch)) chosenCoverage.add(t);
       for (const t of coverageOf(spirit, learnable(member.spiritId))) learnCoverage.add(t);
     }
@@ -358,7 +325,7 @@ export function auditRotation(rotation: TeamRotationFile, history: RotationHisto
       if (syn.confidence === 'verified' && !syn.evidence) problems.push(`${tag}: 标 verified 却没有 evidence 原文`);
       if (syn.evidence) {
         const cited = syn.skills.map((ref) => {
-          const sk = resolveMemberSkill(ref.spiritId, ref.name);
+          const sk = learnable(ref.spiritId).find((s) => s.name === ref.name);
           return sk?.effect ?? '';
         });
         const traits = syn.spiritIds.map((sid) => spiritsById.get(sid)?.trait?.effect ?? '');

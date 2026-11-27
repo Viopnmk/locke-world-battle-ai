@@ -24,9 +24,8 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
-import { buildGuide } from '../src/lib/build-guide';
 import { equippableSkills } from '../src/lib/equip-rules';
-import { ENERGY_CAP, ENERGY_RULES, GATHER_GAIN, energyViolations, entryEnergy, memberEnergy, skillEnergyEffect, teamEnergy, teamEnergyLine, traitEnergyFacts } from '../src/lib/energy';
+import { ENERGY_CAP, ENERGY_RULES, GATHER_GAIN, entryEnergy, memberEnergy, skillEnergyEffect, teamEnergy, teamEnergyLine, traitEnergyFacts } from '../src/lib/energy';
 import { meta, skillsOf, spirits, spiritsById } from '../src/lib/spirits';
 import { teamConflicts, traitActivation, traitNeeds } from '../src/lib/trait-rules';
 import { matchup, TYPE_ORDER } from '../src/lib/typeChart';
@@ -135,7 +134,7 @@ const ARCHETYPES: Archetype[] = [
     id: 'energy',
     label: '能量经济与持续作战',
     category: 'sustain',
-    sub: '抽能压制 · 回能续航 · 把 10 点用满',
+    sub: '低耗续航 · 抽能压制 · 把 10 点用满',
     w: { coverage: 2.8, answers: 2.4, traits: 6, energy: 4.4, speed: 1.0, total: 0.02, power: 0.02 },
     roleBias: { 先手: 1.0, 核心输出: 0.9, 控制: 1.4, 辅助: 1.4, 承伤: 1.2, 收割: 0.9 },
   },
@@ -241,45 +240,6 @@ function buildProfile(spirit: Spirit): Profile {
   };
 }
 
-/* ------------------------------------------------------------ 配招单一真相源 */
-
-/**
- * 阵容里每只精灵的 4 招 = 培养板块 buildGuide(spirit, 'burst') 的 4 格（同序、同理由）。
- * 这里只做一次缓存：整个轮换过程（组队搜索、文案、校验）都读同一份结果，
- * 既保证 18 只两边 100% 一致，也避免重复跑 6×30×… 次培养引擎。
- */
-const guideCache = new Map<string, SkillPick>();
-
-function guidePickOf(spirit: Spirit): SkillPick {
-  const hit = guideCache.get(spirit.id);
-  if (hit) return hit;
-  const guide = buildGuide(spirit, 'burst');
-  const notes = new Map<string, { slot: string; why: string }>();
-  for (const slot of guide.slots) {
-    /* 靠改血脉拿到的那一格，在阵容页也要说清「是从哪个血脉换来的」，别看起来像天生就会 */
-    const bloodNote =
-      slot.source === '血脉'
-        ? `改「${guide.bloodline.main.blood}血脉」取得（Lv.${guide.bloodline.main.level ?? 15}）：`
-        : '';
-    notes.set(slot.skill.name, { slot: slot.slot, why: `${bloodNote}${slot.reason}` });
-  }
-  const pick: SkillPick = { chosen: guide.slots.map((slot) => slot.skill), notes };
-  guideCache.set(spirit.id, pick);
-  return pick;
-}
-
-/**
- * 培养方案给的 4 招要能原样进阵容：4 格齐全、有输出、不违反能量规则。
- * 违反的（入场 0 能量还全带高价招、10 点上限带不动的招）不进候选池——
- * 它们进队只会让 verify:teams 直接判错，而且配招本身也没法用。
- */
-function guideUsable(spirit: Spirit): boolean {
-  const pick = guidePickOf(spirit);
-  if (pick.chosen.length !== 4) return false;
-  if (!pick.chosen.some(isDmg)) return false;
-  return energyViolations(spirit, pick.chosen).length === 0;
-}
-
 const EXCLUDE_NAMES = new Set(['学院呱呱']);
 /** 68 只首领形态：无法确认是否可上场 PvP，默认不选（报告与页面都写明） */
 const POOL: Profile[] = (() => {
@@ -289,9 +249,7 @@ const POOL: Profile[] = (() => {
     .filter((s) => !EXCLUDE_NAMES.has(s.name))
     .map(buildProfile)
     .filter((p) => p.pool.length >= 4 && p.dmg.length >= 2)
-    .filter((p) => p.total >= 460)
-    /* 配招统一到培养板块后，配招不合法/带不满 4 格的精灵直接不进池 */
-    .filter((p) => guideUsable(p.spirit));
+    .filter((p) => p.total >= 460);
   // 同 dex 只留最强形态：这样组队天然满足「同图鉴编号不能同队」
   const best = new Map<string, Profile>();
   for (const p of raw) {
@@ -360,14 +318,97 @@ function triggerPicks(p: Profile): { need: string; skill: ResolvedSkill }[] {
 }
 
 /**
- * 给一只精灵选 4 招 —— 单一真相源
- *
- * 直接采用培养板块 buildGuide(spirit, 'burst') 的 4 个技能（同序、同理由），
- * 阵容页显示的就是用户在 #/build/<id> 里看到的那四格，不再另写一套选招逻辑。
- * 培养板块改口径时两边一起变；verify:teams 另有一条一致性门禁兜底。
+ * 给一只精灵选 4 招：
+ *   1) 主攻（本系/非本系取有效威力最高，且尽量入场就付得起）
+ *   2) 特性触发技（迸发 / 回能 / 0 费 / 某系技能…）
+ *   3) 补盲（覆盖团队还没打到的属性）
+ *   4) 角色功能技（先手提速 / 控制抽能 / 辅助回能 / 承伤减伤 / 强化 / 收割）
  */
-function chooseSkills(p: Profile): SkillPick {
-  return guidePickOf(p.spirit);
+function chooseSkills(p: Profile, role: Role, covered: Set<string>, allowBurst: boolean, costCeiling = ENERGY_CAP): SkillPick {
+  // 硬约束：单招能耗不能超过 10 点上限，除非这只精灵有「突破上限」特性
+  const pool = p.pool.filter((sk) => cost(sk) <= (p.overCap ? 30 : ENERGY_CAP));
+  const chosen: ResolvedSkill[] = [];
+  const notes = new Map<string, { slot: string; why: string }>();
+  const take = (sk: ResolvedSkill, slot: string, why: string) => {
+    if (chosen.length >= 4 || chosen.some((c) => c.name === sk.name)) return false;
+    if (chosen.filter((c) => c.learn === 2).length + (sk.learn === 2 ? 1 : 0) > 1) return false;
+    chosen.push(sk);
+    notes.set(sk.name, { slot, why });
+    return true;
+  };
+
+  const affordable = p.dmg.filter((sk) => cost(sk) <= Math.max(p.entry, 1));
+  const budget = Math.min(allowBurst ? ENERGY_CAP : Math.max(p.entry, 2), costCeiling);
+
+  // 1) 主攻
+  const mainPool = (affordable.length ? affordable : p.dmg).filter((sk) => cost(sk) <= budget);
+  const main = [...mainPool].sort((a, b) => effPower(p, b) - effPower(p, a) || cost(a) - cost(b))[0] ?? p.dmg[0];
+  if (main) {
+    const hits = TYPE_ORDER.filter((t) => matchup(main.type, [t]).multiplier >= 2).slice(0, 3);
+    take(
+      main,
+      '主攻',
+      `${main.type}系·${main.category}，威力 ${main.power}、${cost(main)} 费，本系加成后有效威力 ${Math.round(effPower(p, main))}${hits.length ? `，对 ${hits.join('、')} 打出 ×2` : '，属性上打不出 ×2，靠威力硬吃'}`,
+    );
+  }
+
+  // 2) 特性触发技（一条特性最多两格）
+  let triggers = 0;
+  for (const { need, skill } of triggerPicks(p)) {
+    if (triggers >= 2) break;
+    if (take(skill, '机制', `点亮特性：${need}；${skill.type}·${skill.category}，${cost(skill)} 费，${effectPhrase(skill)}`)) triggers += 1;
+  }
+
+  // 3) 补盲
+  const coverageRank = (sk: ResolvedSkill) => {
+    const fresh = TYPE_ORDER.filter((t) => matchup(sk.type, [t]).multiplier >= 2 && !covered.has(t)).length;
+    return fresh * 120 + effPower(p, sk) / 6 - cost(sk) * 3;
+  };
+  const blind = p.dmg
+    .filter((sk) => !chosen.some((c) => c.name === sk.name))
+    .filter((sk) => cost(sk) <= budget)
+    .sort((a, b) => coverageRank(b) - coverageRank(a))[0];
+  if (blind) {
+    const fresh = TYPE_ORDER.filter((t) => matchup(blind.type, [t]).multiplier >= 2 && !covered.has(t));
+    take(
+      blind,
+      '补盲',
+      `${blind.type}系·威力 ${blind.power}·${cost(blind)} 费，补上 ${fresh.slice(0, 4).join('、') || '同系叠加'} 的 ×2 打击面`,
+    );
+  }
+
+  // 4) 角色功能技
+  const rolePool = [...pool]
+    .filter((sk) => !chosen.some((c) => c.name === sk.name))
+    .sort((a, b) => roleUtility(b, role) - roleUtility(a, role) || cost(a) - cost(b));
+  const util = rolePool.find((sk) => roleUtility(sk, role) > 0);
+  if (util) {
+    take(util, '功能', `${role}位：${util.type}·${util.category}，${cost(util)} 费，${effectPhrase(util)}`);
+  }
+
+  // 5) 补满：先补覆盖再补最便宜的可用招
+  while (chosen.length < 4) {
+    const rest = pool.filter((sk) => !chosen.some((c) => c.name === sk.name));
+    if (!rest.length) break;
+    const next =
+      [...rest].sort((a, b) => coverageRank(b) - coverageRank(a) || effPower(p, b) - effPower(p, a) || cost(a) - cost(b))[0] ??
+      rest[0];
+    take(next, '补位', `${next.type}·${next.category}，${cost(next)} 费，${effectPhrase(next)}`);
+  }
+
+  // 6) 兜底：若 4 招里没有任何入场可用的输出（0 能量特性），换一个 0 费/低费招进来
+  if (chosen.length === 4 && !chosen.some((sk) => isDmg(sk) && cost(sk) <= Math.max(p.entry, 0))) {
+    const cheap = pool
+      .filter((sk) => isDmg(sk) && cost(sk) <= Math.max(p.entry, 1))
+      .sort((a, b) => cost(a) - cost(b) || effPower(p, b) - effPower(p, a))[0];
+    if (cheap && !chosen.some((c) => c.name === cheap.name)) {
+      const drop = chosen.findIndex((sk) => !isDmg(sk)) >= 0 ? chosen.findIndex((sk) => !isDmg(sk)) : 3;
+      chosen.splice(drop, 1);
+      take(cheap, '低耗', `入场 ${p.entry} 点就能打：${cheap.type}·威力 ${cheap.power}·${cost(cheap)} 费`);
+    }
+  }
+
+  return { chosen, notes };
 }
 
 /* ------------------------------------------------------------------ 评分 */
@@ -483,31 +524,68 @@ function assignRoles(sets: MemberSet[], arch: Archetype): MemberSet[] {
   return best;
 }
 
-/** 角色定下来之后套上配招。4 招由培养板块决定，角色只改文案里的分工，不再改技能。 */
-function attachSkills(sets: MemberSet[]): MemberSet[] {
-  return sets.map((m) => {
-    const pick = chooseSkills(m.profile);
+/** 角色定下来之后，按角色重挑 4 招（承伤位优先减伤，控制位优先抽能…） */
+function rechooseByRole(sets: MemberSet[], arch: Archetype): MemberSet[] {
+  const ceiling = arch.id === 'energy' ? 5 : ENERGY_CAP;
+  let covered = coverageOfSets(sets);
+  let out = sets.map((m) => {
+    const pick = chooseSkills(m.profile, m.role, covered, arch.id === 'burst', ceiling);
     return { profile: m.profile, role: m.role, chosen: pick.chosen, notes: pick.notes };
   });
+  covered = coverageOfSets(out);
+  out = out.map((m) => {
+    const pick = chooseSkills(m.profile, m.role, covered, arch.id === 'burst', ceiling);
+    return { profile: m.profile, role: m.role, chosen: pick.chosen, notes: pick.notes };
+  });
+  return out;
 }
 
 /* ------------------------------------------------------------------ 组队 */
 
-function initialSets(team: Profile[]): MemberSet[] {
-  return team.map((p, i) => {
+function initialSets(team: Profile[], arch: Archetype): MemberSet[] {
+  const covered = new Set<string>();
+  const sets: MemberSet[] = [];
+  team.forEach((p, i) => {
     const role = ROLES[i];
-    const pick = chooseSkills(p);
-    return { profile: p, role, chosen: pick.chosen, notes: pick.notes };
+    const pick = chooseSkills(p, role, covered, arch.id === 'burst');
+    for (const sk of pick.chosen) {
+      if (!isDmg(sk)) continue;
+      for (const t of TYPE_ORDER) if (matchup(sk.type, [t]).multiplier >= 2) covered.add(t);
+    }
+    sets.push({ profile: p, role, chosen: pick.chosen, notes: pick.notes });
   });
+  return sets;
 }
 
-/**
- * 组成员的 4 招：完全采用培养板块（同样的技能、同样的顺序）。
- * 以前这里会按「全队缺口」临时换掉某一格，那正是阵容与培养分叉的来源；
- * 现在全队缺口只体现在选人与战术文案上，绝不改成员的 4 招。
- */
-function finalizeSets(team: Profile[]): MemberSet[] {
-  return initialSets(team);
+function finalizeSets(team: Profile[], arch: Archetype): MemberSet[] {
+  // 第一遍定初稿，第二遍用全队覆盖反过来补缺口
+  let sets = initialSets(team, arch);
+  const covered = coverageOfSets(sets);
+  sets = sets.map((m, i) => {
+    const role = ROLES[i];
+    const gaps = new Set(TYPE_ORDER.filter((t) => !covered.has(t)));
+    const pick = chooseSkills(m.profile, role, new Set([...covered].filter((t) => t !== '')), arch.id === 'burst');
+    // 若该精灵有招能补全队缺口，且换掉的不是主攻，则换
+    const gapSkill = m.profile.dmg
+      .filter((sk) => !pick.chosen.some((c) => c.name === sk.name))
+      .filter((sk) => cost(sk) <= Math.max(m.profile.entry, 2))
+      .filter((sk) => TYPE_ORDER.some((t) => gaps.has(t) && matchup(sk.type, [t]).multiplier >= 2))
+      .sort((a, b) => effPower(m.profile, b) - effPower(m.profile, a))[0];
+    if (gapSkill && pick.chosen.length === 4) {
+      const drop = pick.chosen.findIndex((sk, idx) => idx > 0 && !isDmg(sk));
+      const victim = drop >= 0 ? drop : 3;
+      const removed = pick.chosen[victim];
+      pick.chosen.splice(victim, 1);
+      pick.chosen.push(gapSkill);
+      pick.notes.delete(removed.name);
+      pick.notes.set(gapSkill.name, {
+        slot: '补盲',
+        why: `${gapSkill.type}系·威力 ${gapSkill.power}·${cost(gapSkill)} 费，补全队缺口 ${TYPE_ORDER.filter((t) => gaps.has(t) && matchup(gapSkill.type, [t]).multiplier >= 2).join('、')}`,
+      });
+    }
+    return { profile: m.profile, role, chosen: pick.chosen, notes: pick.notes };
+  });
+  return sets;
 }
 
 function roleFit(p: Profile, role: Role, arch: Archetype): number {
@@ -558,7 +636,7 @@ function pickRoleCandidate(
     team[slotIndex] = cand;
     const filled = team.filter(Boolean) as Profile[];
     if (filled.length < slotIndex + 1) continue;
-    const sets = initialSets(filled);
+    const sets = initialSets(filled, arch);
     const score = scoreTeam(sets, arch) + roleFit(cand, role, arch) * 0.15;
     if (score > bestScore) {
       bestScore = score;
@@ -590,7 +668,7 @@ function buildTeam(arch: Archetype, bannedIds: Set<string>, seed: number): Membe
     }
   }
 
-  let sets = finalizeSets(team);
+  let sets = finalizeSets(team, arch);
   let bestScore = scoreTeam(sets, arch);
 
   // 局部爬山：每个位置换一个更合适的，最多 3 轮
@@ -608,7 +686,7 @@ function buildTeam(arch: Archetype, bannedIds: Set<string>, seed: number): Membe
         if (alt.id === sets[i].profile.id) continue;
         const trialTeam = [...others.map((m) => m.profile)];
         trialTeam.splice(i, 0, alt);
-        const trial = finalizeSets(trialTeam);
+        const trial = finalizeSets(trialTeam, arch);
         const trialScore = scoreTeam(trial, arch);
         if (trialScore > bestScore + 0.01) {
           sets = trial;
@@ -622,7 +700,7 @@ function buildTeam(arch: Archetype, bannedIds: Set<string>, seed: number): Membe
   }
 
   sets = assignRoles(sets, arch);
-  sets = attachSkills(sets);
+  sets = rechooseByRole(sets, arch);
   sets = assignRoles(sets, arch);
   return sets;
 }
@@ -1317,11 +1395,7 @@ function teamName(arch: Archetype, sets: MemberSet[]): string {
       : arch.id === 'balance'
         ? ['联防', '铁壁', '稳阵'][core.profile.hp % 3]
         : ['循环', '节流', '续航'][core.profile.spd % 3];
-  if (arch.id !== 'energy') return `${typeWord}${suffix}队`;
-  /* 配招统一到培养板块后，经济队的 4 招不再由「≤5 费」筛出来，平均能耗得照实说：
-     只有平均 ≤3.0 费才叫「低耗」，否则直接叫 节流/循环/续航 队，避免队名和 tags 自相矛盾。 */
-  const avgCost = mean(sets.flatMap((m) => m.chosen.map((sk) => cost(sk))));
-  return avgCost <= 3 ? `低耗${suffix}队` : `${suffix}队`;
+  return arch.id === 'energy' ? `低耗${suffix}队` : `${typeWord}${suffix}队`;
 }
 
 /* ------------------------------------------------------------------ 读写 */
@@ -1378,15 +1452,15 @@ function main() {
     }
     const refreshed: TeamRotationFile = {
       ...rotation,
-      generatedBy: 'scripts/rotate-teams.ts (refresh · 配招 = build-guide burst)',
+      generatedBy: 'scripts/rotate-teams.ts (refresh)',
       teams: rotation.teams.map((preset, i) => {
         const arch = ARCHETYPES.find((a) => a.id === preset.archetype) ?? ARCHETYPES[i] ?? ARCHETYPES[0];
-        /* --refresh：精灵、角色、轮次都不变，只把每只的 4 招重新按培养板块统一口径算一遍，
-           并把能量账 / 联动 / 战术文案一起重写。以前这里是把旧技能名原样读回来，
-           所以阵容和培养一直对不上。 */
         const sets = preset.members.map((m) => {
           const p = BY_ID.get(m.spiritId) ?? buildProfile(spiritsById.get(m.spiritId)!);
-          const pick = chooseSkills(p);
+          const chosen = m.skills
+            .map((ref) => p.pool.find((sk) => sk.name === ref.name) ?? [...p.pool, ...skillsOf(p.spirit)].find((sk) => sk.name === ref.name))
+            .filter((sk): sk is ResolvedSkill => Boolean(sk));
+          const pick = { chosen, notes: new Map(m.skills.map((ref) => [ref.name, { slot: ref.slot ?? '补位', why: ref.why }])) };
           return { profile: p, role: m.role as Role, chosen: pick.chosen, notes: pick.notes };
         });
         return makePreset(arch, sets, rotation.round);
@@ -1473,7 +1547,7 @@ function main() {
     updatedAt: beijingIso(now),
     nextRotationAt: beijingIso(new Date(now.getTime() + INTERVAL_HOURS * 3600 * 1000)),
     intervalHours: INTERVAL_HOURS,
-    generatedBy: 'scripts/rotate-teams.ts v3 (energy model · 配招统一为 build-guide burst)',
+    generatedBy: 'scripts/rotate-teams.ts v2 (energy model)',
     dataset: { spiritCount: meta.spiritCount, fetchedAt: meta.fetchedAt },
     // 同轮重生成沿用恢复出的上一轮；新一轮则把刚结束的这一轮完整存下来
     previous:
