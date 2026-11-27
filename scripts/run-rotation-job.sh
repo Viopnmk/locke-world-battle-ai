@@ -35,10 +35,13 @@ echo "[rotation] 第 ${round_before} 轮 → 第 ${round_after} 轮"
 
 # rotate:teams 内部已经「先生成到内存 → 全量校验 → 备份 → 原子写入」，
 # 这里再独立跑一遍落盘后的校验（能量 / 特性 / 血脉 / 同 dex / 联动证据），
-# 以及「敌方 18 系换宠 & 出招」模块对这三套阵容的 54 条复算。
+# 「敌方 18 系换宠 & 出招」模块对这三套阵容的 54 条复算，
+# 以及「培养页四招 = 阵容推荐四招（同技能同顺序）」的一致性门禁。
 npm run verify:teams
 npm run verify:tactics
 npm run verify:matchups
+npm run verify:bloodlines
+npm run verify:build-guide
 npm run typecheck
 
 # 2) 构建

@@ -211,8 +211,11 @@ export function BuildPage({ spiritId, pickOpen, onOpenPick, onClosePick, onPick 
               {guide.roleLabel} · {guide.presetLabel}
             </span>
             {guide.aligned ? (
-              <span className="build-card__sync" title="四招取自阵容推荐，同技能同顺序">
-                阵容同款 · {guide.aligned.teamName}
+              <span
+                className="build-card__sync"
+                title={`四招取自阵容推荐《${guide.aligned.teamName}》（第 ${guide.aligned.round} 轮 · ${guide.aligned.role}），同技能同顺序`}
+              >
+                阵容同款
               </span>
             ) : null}
           </div>
