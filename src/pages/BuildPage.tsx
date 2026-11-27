@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { SpiritPicker } from '../components/SpiritPicker';
 import { baseName, buildGuide, NATURE_SCALE_NOTE, PRESETS } from '../lib/build-guide';
 import type { BuildSlot, PresetKey } from '../lib/build-guide';
@@ -69,44 +69,62 @@ const SLOT_ACCENT: Record<string, string> = {
   fill: '#8a9089',
 };
 
-function SkillCard({ slot, bloodName }: { slot: BuildSlot; bloodName: string | null }) {
+/** 2×2 技能方格：来源标签（升级/技能石/XX血脉）、槽位角色、图标、能耗、威力/状态、属性+技能名。 */
+function SkillSlot({
+  slot,
+  bloodName,
+  active,
+  onJump,
+}: {
+  slot: BuildSlot;
+  bloodName: string | null;
+  active: boolean;
+  onJump: (skillId: string) => void;
+}) {
   const skill = slot.skill;
   const color = typeColor(skill.type);
   const sourceText = slot.source === '血脉' ? `${bloodName ?? ''}血脉` : slot.source;
   const damaging = isDamaging(skill);
+  const accent = SLOT_ACCENT[slot.kind] ?? SLOT_ACCENT.fill;
   return (
-    <article
-      className={`bskill bskill--${slot.kind}`}
-      style={{ borderLeftColor: SLOT_ACCENT[slot.kind] ?? SLOT_ACCENT.fill }}
+    <button
+      type="button"
+      className={`skill-slot${active ? ' is-active' : ''}`}
+      onClick={() => onJump(skill.id)}
+      title={skill.effect || skill.name}
+      aria-label={`${slot.slot}：${skill.name}（${sourceText}），点按查看说明`}
     >
-      <header className="bskill__head">
-        <span className="bskill__type" style={{ background: tint(color, 0.16), color }}>
-          <TypeGlyph type={skill.type} size={13} />
-          {skill.type}
-        </span>
-        <h4 className="bskill__name">{skill.name}</h4>
-        <span className={`bskill__source bskill__source--l${slot.source === '升级' ? 0 : slot.source === '技能石' ? 1 : 2}`}>
-          {sourceText}
-        </span>
-        <span className="bskill__icon" style={{ background: tint(color, 0.1) }}>
+      <span
+        className={`skill-slot__source skill-slot__source--l${slot.source === '升级' ? 0 : slot.source === '技能石' ? 1 : 2}`}
+      >
+        {sourceText}
+      </span>
+      <span className="skill-slot__role" style={{ color: accent }}>
+        {slot.slot}
+      </span>
+      <span className="skill-slot__body">
+        <span className="skill-slot__icon" style={{ background: tint(color, 0.12) }}>
           {skill.icon ? (
             <img src={skill.icon} alt="" loading="lazy" decoding="async" />
           ) : (
             <CategoryGlyph category={skill.category} />
           )}
         </span>
-      </header>
-      <p className="bskill__meta">
-        <span>
-          {damaging ? `${skill.category} · 威力 ${skill.power} · 能耗 ` : '变化 · 状态/辅助 · 能耗 '}
-          <b className="bskill__energy">★{skill.energy ?? '—'}</b>
+        <span className="skill-slot__stats">
+          <span className="skill-slot__stat skill-slot__stat--energy">
+            <span aria-hidden="true">★</span> {skill.energy ?? '—'}
+          </span>
+          <span className="skill-slot__stat" aria-label={damaging ? `威力 ${skill.power}` : '状态技能'}>
+            <CategoryGlyph category={skill.category} />
+            {damaging ? skill.power : '状态'}
+          </span>
         </span>
-        <span className="bskill__role" style={{ color: SLOT_ACCENT[slot.kind] ?? SLOT_ACCENT.fill }}>
-          {slot.slot}
-        </span>
-      </p>
-      <p className="bskill__reason">{slot.reason}</p>
-    </article>
+      </span>
+      <span className="skill-slot__name">
+        <TypeGlyph type={skill.type} size={12} />
+        <span>{skill.name}</span>
+      </span>
+    </button>
   );
 }
 
@@ -123,10 +141,18 @@ export function BuildPage({ spiritId, pickOpen, onOpenPick, onClosePick, onPick 
   const [preset, setPreset] = useState<PresetKey>('burst');
   /** 只有用户主动点开选宠器才重置搜索词；历史回退回到 #/build/.../pick 时保留原来的搜索结果。 */
   const [pickNonce, setPickNonce] = useState(0);
+  /** 点了 2×2 里的技能格：高亮并滚到对应的那条说明。 */
+  const [activeSkill, setActiveSkill] = useState<string | null>(null);
+  const noteRefs = useRef<Record<string, HTMLLIElement | null>>({});
 
   const openPick = () => {
     setPickNonce((n) => n + 1);
     onOpenPick();
+  };
+
+  const jumpToNote = (skillId: string) => {
+    setActiveSkill(skillId);
+    noteRefs.current[skillId]?.scrollIntoView({ behavior: 'smooth', block: 'center' });
   };
 
   const selected = (spiritId ? spiritsById.get(spiritId) : undefined) ?? spiritsById.get(DEFAULT_ID) ?? spirits[0];
@@ -162,18 +188,21 @@ export function BuildPage({ spiritId, pickOpen, onOpenPick, onClosePick, onPick 
       </div>
 
       <article className="build-card">
-        <div className="build-card__head">
-          <img className="build-card__avatar" src={selected.avatar} alt={`${selected.name} 头像`} decoding="async" />
-          <div className="build-card__info">
-            <div className="build-card__titles">
-              {formTag ? <span className="build-card__form">{formTag}</span> : null}
-              <span className="build-card__name">{baseName(selected.name)}</span>
-              <span className="build-card__dex">No.{selected.dex}</span>
-            </div>
+        <div className="build-hero">
+          <div className="build-hero__side">
+            {formTag ? <span className="build-card__form">{formTag}</span> : null}
+            <img
+              className="build-hero__avatar"
+              src={selected.avatar}
+              alt={`${selected.name} 头像`}
+              decoding="async"
+            />
+            <span className="build-card__name">{baseName(selected.name)}</span>
+            <span className="build-card__dex">No.{selected.dex}</span>
             <span className="build-card__types">
               {selected.type.map((t) => (
                 <span key={t} className="type-chip type-chip--sm" style={{ background: tint(typeColor(t), 0.16), color: typeColor(t) }}>
-                  <TypeGlyph type={t} size={13} />
+                  <TypeGlyph type={t} size={12} />
                   {t}
                 </span>
               ))}
@@ -182,44 +211,19 @@ export function BuildPage({ spiritId, pickOpen, onOpenPick, onClosePick, onPick 
               {guide.roleLabel} · {guide.presetLabel}
             </span>
           </div>
-        </div>
 
-        <section className="build-skills">
-          <h3 className="build-skills__title">
-            <span aria-hidden="true">🎒</span> 携带技能推荐 <em>({guide.slots.length})</em>
-          </h3>
-          <p className="build-skills__weak">
-            {guide.weaknesses.length ? (
-              <>
-                防御弱点
-                {guide.weaknesses.map((w) => (
-                  <span key={w.type} className="weak-chip" style={{ color: typeColor(w.type), borderColor: tint(typeColor(w.type), 0.35) }}>
-                    <TypeGlyph type={w.type} size={11} />
-                    {w.type} ×{w.multiplier}
-                  </span>
-                ))}
-              </>
-            ) : (
-              '克制表里没有 ×2 弱点'
-            )}
-          </p>
-          <p className="build-skills__counter">
-            {guide.counter.locked
-              ? `反克制位：${guide.counter.locked.type}系 ×2 克制 ${guide.counter.locked.covered.join('、')}（第 ${guide.counter.locked.slotIndex} 格${guide.counter.locked.fromBlood ? ' · 血脉' : ''}）`
-              : guide.counter.hasWeakness
-                ? '反克制位：可学池无 ×2 反克招，改成补盲'
-                : '反克制位：没有弱点，不设'}
-          </p>
-          <div className="bskill-list">
+          <div className="build-grid" aria-label="四个携带技能，点按查看说明">
             {guide.slots.map((slot) => (
-              <SkillCard
+              <SkillSlot
                 key={slot.skill.id}
                 slot={slot}
                 bloodName={guide.bloodline.main.equipped ? guide.bloodline.main.blood : null}
+                active={activeSkill === slot.skill.id}
+                onJump={jumpToNote}
               />
             ))}
           </div>
-        </section>
+        </div>
 
         <section className="build-row">
           <h3 className="build-row__title">
@@ -248,6 +252,72 @@ export function BuildPage({ spiritId, pickOpen, onOpenPick, onClosePick, onPick 
               </span>
             ))}
           </div>
+        </section>
+
+        <section className="skill-notes" aria-label="防御弱点与技能说明">
+          <div className="skill-notes__head">
+            <h3 className="skill-notes__title">
+              <span aria-hidden="true">🛡</span> 防御弱点 & 技能说明 <em>({guide.slots.length})</em>
+            </h3>
+            <span className="skill-notes__weak">
+              {guide.weaknesses.length
+                ? guide.weaknesses.map((w) => (
+                    <span
+                      key={w.type}
+                      className="weak-chip"
+                      style={{ color: typeColor(w.type), borderColor: tint(typeColor(w.type), 0.35) }}
+                    >
+                      <TypeGlyph type={w.type} size={11} />
+                      {w.type} ×{w.multiplier}
+                    </span>
+                  ))
+                : '克制表里没有 ×2 弱点'}
+            </span>
+          </div>
+          <p className="skill-notes__counter">
+            {guide.counter.locked
+              ? `反克制位：${guide.counter.locked.type}系 ×2 克制 ${guide.counter.locked.covered.join('、')}（第 ${guide.counter.locked.slotIndex} 格${guide.counter.locked.fromBlood ? ' · 血脉' : ''}）`
+              : guide.counter.hasWeakness
+                ? '反克制位：可学池无 ×2 反克招，改成补盲'
+                : '反克制位：没有弱点，不设'}
+          </p>
+          <ol className="skill-notes__list">
+            {guide.slots.map((slot, index) => (
+              <li
+                key={slot.skill.id}
+                ref={(el) => {
+                  noteRefs.current[slot.skill.id] = el;
+                }}
+                className={`skill-note${activeSkill === slot.skill.id ? ' is-active' : ''}`}
+              >
+                <p className="skill-note__head">
+                  <span
+                    className="skill-note__idx"
+                    style={{ background: SLOT_ACCENT[slot.kind] ?? SLOT_ACCENT.fill }}
+                  >
+                    {index + 1}
+                  </span>
+                  <span
+                    className="skill-note__slot"
+                    style={{ color: SLOT_ACCENT[slot.kind] ?? SLOT_ACCENT.fill }}
+                  >
+                    {slot.slot}
+                  </span>
+                  <span className="skill-note__type">
+                    <TypeGlyph type={slot.skill.type} size={11} />
+                    {slot.skill.type}
+                  </span>
+                  <strong className="skill-note__name">{slot.skill.name}</strong>
+                  <span className="skill-note__src">
+                    {slot.source === '血脉'
+                      ? `${guide.bloodline.main.blood ?? ''}血脉`
+                      : slot.source}
+                  </span>
+                </p>
+                <p className="skill-note__reason">{slot.reason}</p>
+              </li>
+            ))}
+          </ol>
         </section>
 
         <section className="build-row">
